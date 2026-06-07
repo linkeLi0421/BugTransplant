@@ -1158,6 +1158,36 @@ def run_offline_merge(args: argparse.Namespace) -> int:
     # ------------------------------------------------------------------
     # 2. Assign dispatch bits
     # ------------------------------------------------------------------
+    # Incremental merge: if a prior run recorded a dispatch order, keep those
+    # bugs at their original bit positions (so their wrapped diffs stay valid)
+    # and append any newly-added diff bugs at the end. Without this, inserting
+    # one bug shifts every later bug's bit and forces re-wrapping all of them.
+    _incremental_added: list[str] = []
+    _recorded_order = None
+    _dorder_path = output_dir / "dispatch_order.json"
+    if _dorder_path.exists():
+        try:
+            _recorded_order = json.loads(_dorder_path.read_text())
+        except Exception:
+            _recorded_order = None
+    if _recorded_order:
+        _by_id = {b["bug_id"]: b for b in diff_bugs}
+        _recorded_set = set(_recorded_order)
+        kept = [_by_id[n] for n in _recorded_order if n in _by_id]
+        appended = [b for b in diff_bugs if b["bug_id"] not in _recorded_set]
+        # Only reorder when the recorded bugs are still all present (kept count
+        # matches); otherwise fall back to default order + full re-wrap.
+        if len(kept) == len([n for n in _recorded_order if n in _by_id]) and (kept or appended):
+            diff_bugs = kept + appended
+            _incremental_added = [b["bug_id"] for b in appended]
+            if _incremental_added:
+                logger.info(
+                    "Incremental merge: preserving %d recorded dispatch bits, "
+                    "appending %d new bug(s): %s",
+                    len(kept), len(_incremental_added),
+                    ", ".join(_incremental_added),
+                )
+
     dispatch_state = assign_dispatch_bits(diff_bugs, local_bugs, testcase_only_bugs)
     logger.info("Dispatch bits assigned: %d bits, %d bytes",
                 dispatch_state["next_bit"], dispatch_state["dispatch_bytes"])
@@ -1172,14 +1202,30 @@ def run_offline_merge(args: argparse.Namespace) -> int:
     ]
     dispatch_order_path = output_dir / "dispatch_order.json"
     reuse_wrapped_cache = False
+    dispatch_order_unchanged = False
     if dispatch_order_path.exists():
         try:
-            reuse_wrapped_cache = json.loads(dispatch_order_path.read_text()) == dispatch_order
+            recorded = json.loads(dispatch_order_path.read_text())
+            dispatch_order_unchanged = (recorded == dispatch_order)
+            # Reuse wraps when the recorded order is unchanged, OR is a prefix
+            # of the new order (incremental add: recorded bugs keep their bits,
+            # new bugs appended at the end). The per-bug reuse loop only loads
+            # wraps that exist on disk, so appended bugs still get wrapped.
+            reuse_wrapped_cache = (
+                dispatch_order_unchanged
+                or dispatch_order[: len(recorded)] == recorded
+            )
         except Exception:
             reuse_wrapped_cache = False
+            dispatch_order_unchanged = False
     if not reuse_wrapped_cache:
         logger.info(
             "Dispatch order changed or not recorded; regenerating wrapped diffs"
+        )
+    elif not dispatch_order_unchanged:
+        logger.info(
+            "Incremental merge: reusing %d cached wraps, wrapping only new bug(s)",
+            len(json.loads(dispatch_order_path.read_text())),
         )
 
     if args.dry_run:
@@ -1446,10 +1492,13 @@ def run_offline_merge(args: argparse.Namespace) -> int:
         combined_path = output_dir / "combined.diff"
         if (
             reuse_wrapped_cache
+            and dispatch_order_unchanged
             and combined_path.exists()
             and combined_path.stat().st_size > 0
         ):
             # Reuse existing combined diff — skip the agent merge entirely.
+            # Only safe when the dispatch order is *unchanged*; an incremental
+            # add must re-merge so the new bug's wrapped delta is included.
             logger.info("combined.diff already exists, reusing: %s (%d bytes)",
                         combined_path, combined_path.stat().st_size)
             _restore_harness_baseline(container, project, harness_baseline_rev)
