@@ -505,7 +505,7 @@ def _parse_llvm_coverage(coverage_path: Path) -> dict:
 
     file_coverage = {}
     for file_entry in data["data"][0]["files"]:
-        filename = file_entry["filename"]
+        filename = os.path.normpath(file_entry["filename"])
         lines = {}
         # LLVM segments: [line, col, count, hasCount, isRegionEntry, isGapRegion]
         # A segment marks the start of a region; count applies until next segment
@@ -546,7 +546,10 @@ def scan_coverage_for_bugs(experiment_dir: Path, benchmark: str,
         crash_file = info.get("crash_file")
         crash_line = info.get("crash_line")
         if crash_file and crash_line:
-            bug_crash_lines[bug_id] = (crash_file, crash_line)
+            # Normalize away "/./" etc. — metadata paths like
+            # /src/ghostpdl/./psi/idict.c never suffix-match the clean
+            # paths in LLVM coverage JSON, silently yielding 0 reach events.
+            bug_crash_lines[bug_id] = (os.path.normpath(crash_file), crash_line)
 
     if not bug_crash_lines:
         logger.info("No bugs have crash line info; skipping coverage scan")
