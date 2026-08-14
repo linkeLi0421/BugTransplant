@@ -27,9 +27,11 @@ static helper inlined at the fault site cannot displace the real function
 name. Frames without ``:<line>`` are kept -- dropping them mistakes a
 caller for the fault site.
 
-**Specificity is measured, not assumed.** Negative control over every
-same-benchmark mismatched ``(reference_i, post_j)`` pair (17,518 pairs):
-this rule accepts 4.8%; the rule it replaced accepted 80.2%. See
+**Specificity is measured, not assumed.** Negative control: classify every
+same-benchmark mismatched ``(reference_i, post_j)`` pair, which is wrong by
+construction. Over the 132 agent-modified bugs (2,348 pairs) this rule
+accepts **4.6%**, against **65.0%** for the rule it replaced on the same
+pairs. Over all 355 shipped bugs (17,518 pairs) it accepts 3.8%. See
 ``notes/methodology/rq3_oracle_specificity.md`` in the paper repo.
 """
 from __future__ import annotations
