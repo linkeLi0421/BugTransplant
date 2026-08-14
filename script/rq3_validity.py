@@ -22,10 +22,11 @@ For each (benchmark, bug) pair, compare the canonical OSV crash log in
                  measures the fidelity of our reference collection, not
                  the agent, and conflates the two.
 
-Frames sharing a program counter are grouped into one "site", so a small
-static helper inlined at the fault site cannot displace the real function
-name. Frames without ``:<line>`` are kept -- dropping them mistakes a
-caller for the fault site.
+Frames sharing a program counter are grouped into one "site", carrying every
+function name and file reported at that address, so a small static helper
+inlined at the fault site cannot displace either the name or the location of
+the function that actually holds the bug. Frames without ``:<line>`` are
+kept -- dropping them mistakes a caller for the fault site.
 
 **Specificity is measured, not assumed.** Negative control: classify every
 same-benchmark mismatched ``(reference_i, post_j)`` pair, which is wrong by
@@ -110,8 +111,13 @@ _FRAME_RE = re.compile(
 
 # One "site" = one program counter. Inlining makes a single PC report several
 # nested function names; they are the same fault site, so they are grouped.
-# funcs is innermost-first.
-Site = tuple  # (funcs: tuple[str, ...], relpath: str, line: int | None)
+# A site therefore carries *all* the names and *all* the files reported at
+# that address -- both innermost-first. Keeping the whole file list matters:
+# an inlined helper often lives in a header (`sw32_` in blosc-private.h
+# inlined into blosc_d in blosc2.c), so recording only the innermost frame's
+# file would let the helper displace the location of the function that
+# actually holds the bug, exactly the artifact the grouping exists to remove.
+Site = tuple  # (funcs: tuple[str, ...], files: tuple[str, ...], line: int | None)
 
 
 def _sites(text: str) -> list[Site]:
@@ -134,20 +140,22 @@ def _sites(text: str) -> list[Site]:
         if prev_addr is not None and addr == prev_addr and out:
             if func not in out[-1][0]:
                 out[-1][0].append(func)
+            if rel not in out[-1][1]:
+                out[-1][1].append(rel)
             if out[-1][2] is None:
                 out[-1][2] = li
         else:
-            out.append([[func], rel, li])
+            out.append([[func], [rel], li])
         prev_addr = addr
-    return [(tuple(f), p, l) for f, p, l in out]
+    return [(tuple(f), tuple(p), l) for f, p, l in out]
 
 
 def _top_site(sites: list[Site]) -> Site:
     """Innermost site that is not purely harness code."""
-    for funcs, path, line in sites:
+    for funcs, files, line in sites:
         if set(funcs) - _HARNESS_FUNCS:
-            return (funcs, path, line)
-    return ((), "", None)
+            return (funcs, files, line)
+    return ((), (), None)
 
 
 def _first_top(sites: list[Site]) -> str:
@@ -156,7 +164,7 @@ def _first_top(sites: list[Site]) -> str:
 
 
 def _top3_fingerprint(sites: list[Site]) -> tuple:
-    """Top-3 (functions, file) tuples; ignores line numbers (drift across commits)."""
+    """Top-3 (functions, files) tuples; ignores line numbers (drift across commits)."""
     return tuple((f, p) for f, p, _ in sites[:3])
 
 
@@ -164,8 +172,12 @@ def _top3_funcs(sites: list[Site]) -> set[str]:
     return {f for funcs, _, _ in sites[:3] for f in funcs} - _HARNESS_FUNCS
 
 
+def _basenames(files) -> set[str]:
+    return {p.split("/")[-1] for p in files}
+
+
 def _file_set(sites: list[Site]) -> set[str]:
-    return {p.split("/")[-1] for _, p, _ in sites}
+    return {p.split("/")[-1] for _, files, _ in sites for p in files}
 
 
 def _func_set(sites: list[Site]) -> set[str]:
@@ -223,8 +235,8 @@ def classify(orig_text: str, post_text: str,
     post_class, post_dir = extract_sanitizer_class(post_text)
     orig_sites = _sites(orig_text)
     post_sites = _sites(post_text)
-    o_funcs, o_file, _ = _top_site(orig_sites)
-    p_funcs, p_file, _ = _top_site(post_sites)
+    o_funcs, o_files, _ = _top_site(orig_sites)
+    p_funcs, p_files, _ = _top_site(post_sites)
     orig_fp = _top3_fingerprint(orig_sites)
     post_fp = _top3_fingerprint(post_sites)
 
@@ -232,11 +244,11 @@ def classify(orig_text: str, post_text: str,
         "orig_class": orig_class or "",
         "orig_dir": orig_dir or "",
         "orig_top": o_funcs[0] if o_funcs else "",
-        "orig_top3": "|".join(f"{'/'.join(f)}@{p}" for f, p in orig_fp),
+        "orig_top3": "|".join(f"{'/'.join(f)}@{'/'.join(p)}" for f, p in orig_fp),
         "post_class": post_class or "",
         "post_dir": post_dir or "",
         "post_top": p_funcs[0] if p_funcs else "",
-        "post_top3": "|".join(f"{'/'.join(f)}@{p}" for f, p in post_fp),
+        "post_top3": "|".join(f"{'/'.join(f)}@{'/'.join(p)}" for f, p in post_fp),
         "shared_funcs": len(_func_set(orig_sites) & _func_set(post_sites)),
         "shared_files": len(_file_set(orig_sites) & _file_set(post_sites)),
     }
@@ -244,7 +256,12 @@ def classify(orig_text: str, post_text: str,
     if not orig_class or not post_class:
         return "no_data", details
 
-    same_site = bool(set(o_funcs) & set(p_funcs)) and o_file == p_file
+    # Both sides must agree on a function name AND on a file. Comparing the
+    # whole file list, not just the innermost frame's, keeps an inlined
+    # helper declared in a header from breaking a match that the function
+    # names already agree on.
+    same_site = (bool(set(o_funcs) & set(p_funcs))
+                 and bool(set(o_files) & set(p_files)))
     if same_site:
         if orig_class == post_class:
             return "exact", details
