@@ -15,6 +15,12 @@ For each (benchmark, bug) pair, compare the canonical OSV crash log in
                  than the historical bug.
 * ``no_data``  — one or both crash logs missing a usable stack /
                  sanitizer SUMMARY. Excluded from rate denominators.
+* ``native``   — the agent modified nothing for this bug (it already
+                 triggers at c*). No patch exists, so it cannot have
+                 introduced a different bug: validity is not applicable.
+                 Excluded from rate denominators. Classifying these
+                 measures the fidelity of our reference collection, not
+                 the agent, and conflates the two.
 
 Frames sharing a program counter are grouped into one "site", so a small
 static helper inlined at the fault site cannot displace the real function
@@ -46,7 +52,11 @@ from sideeffect.duplication_report import extract_frames  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-VERDICTS = ("exact", "partial", "rejected", "no_data")
+VERDICTS = ("exact", "partial", "rejected", "no_data", "native")
+
+# Verdicts that are *not* evidence about the agent and are excluded from
+# rate denominators.
+_NON_RATED = ("no_data", "native")
 
 
 # Frames whose function name OR file path looks like sanitizer / libFuzzer /
@@ -281,7 +291,40 @@ def _benchmark_df(bench_dir: Path, bug_ids) -> tuple[Counter, int]:
     return df, n
 
 
-def analyze_benchmark(bench_dir: Path) -> list[dict]:
+def _agent_modified(bug_id: str, info: dict, categories: dict | None) -> bool:
+    """Did the agent change anything for this bug?
+
+    Validity asks whether *the agent* introduced a different bug, so it is
+    only meaningful where the agent touched something. Bugs that already
+    trigger at c* carry no patch: nothing could have been corrupted, and
+    classifying them measures the fidelity of our reference collection, not
+    the agent. They are reported as ``native`` and excluded from the rates.
+
+    With ``categories`` (data/bug_categories.csv) we use ``transplant_outcome``
+    directly, which also keeps the 8 testcase-only bugs in scope -- the agent
+    edited their PoC, so it could in principle have retargeted the crash.
+    Without it we fall back to ``dispatch_value != 0``; on the shipped set the
+    two agree for all 355 bugs, but the fallback cannot see testcase-only
+    edits, so pass --categories when the file is available.
+    """
+    if categories is not None and bug_id in categories:
+        return categories[bug_id] != "already-triggering"
+    return bool(info.get("dispatch_value"))
+
+
+def load_categories(path: Path | None) -> dict | None:
+    """bug_id -> transplant_outcome, from data/bug_categories.csv."""
+    if path is None:
+        return None
+    if not path.is_file():
+        logger.warning("categories file not found: %s (falling back to dispatch_value)", path)
+        return None
+    with path.open() as f:
+        return {r["bug_id"]: r.get("transplant_outcome", "")
+                for r in csv.DictReader(f) if r.get("shipped", "yes") == "yes"}
+
+
+def analyze_benchmark(bench_dir: Path, categories: dict | None = None) -> list[dict]:
     """One row per bug. Skips bugs lacking either crash log."""
     meta = json.loads((bench_dir / "bug_metadata.json").read_text())
     df, n_bugs = _benchmark_df(bench_dir, meta["bugs"].keys())
@@ -289,7 +332,11 @@ def analyze_benchmark(bench_dir: Path) -> list[dict]:
     for bug_id, info in meta["bugs"].items():
         orig = bench_dir / "original-crashes" / f"{bug_id}.txt"
         post = bench_dir / "crashes" / f"{bug_id}.txt"
-        if not orig.is_file() or not post.is_file():
+        if not _agent_modified(bug_id, info, categories):
+            verdict, details = "native", {
+                "note": "already-triggering at c*; agent changed nothing",
+            }
+        elif not orig.is_file() or not post.is_file():
             verdict, details = "no_data", {}
             details["note"] = "missing_log"
         else:
@@ -337,24 +384,29 @@ def render_markdown(summary: dict[str, Counter]) -> str:
     lines.append("- **partial** — the innermost site matches but the sanitizer class differs (allocator state decides whether a stale pointer reads as heap-UAF or SEGV), OR same sanitizer class plus a shared **discriminating** frame (one appearing in <=25% of this benchmark's reference logs) in both top-3 sites.")
     lines.append("- **rejected** — neither: the fault sites differ and no discriminating frame is shared.")
     lines.append("- **no_data** — at least one log lacks a usable sanitizer SUMMARY; excluded from rate denominators.")
+    lines.append("- **native** — the agent modified nothing (bug already triggers at $c^*$). No patch exists, so it cannot have introduced a different bug and validity is not applicable. Excluded from rate denominators: classifying these would measure our reference collection, not the agent.")
     lines.append("")
     lines.append("## Overall")
     lines.append("")
     classified = sum(overall[v] for v in ("exact", "partial", "rejected"))
     total = sum(overall.values())
-    lines.append(f"- Total bugs analyzed: **{total}** ({classified} classified, {overall['no_data']} no_data)")
+    lines.append(
+        f"- Bugs the agent modified: **{classified}** classified "
+        f"({overall['native']} native bugs excluded -- no patch exists, so "
+        f"validity is not applicable; {overall['no_data']} no_data)"
+    )
     for v in ("exact", "partial", "rejected"):
         lines.append(f"- **{v}**: {overall[v]} ({_pct(overall[v], classified)} of classified)")
     lines.append("")
     lines.append("## Per benchmark")
     lines.append("")
-    lines.append("| benchmark | total | exact | partial | rejected | no_data |")
+    lines.append("| benchmark | modified | exact | partial | rejected | native (n/a) |")
     lines.append("|---|---:|---:|---:|---:|---:|")
     for b in benches:
         c = summary[b]
-        tot = sum(c.values())
+        mod = c['exact'] + c['partial'] + c['rejected']
         lines.append(
-            f"| {b} | {tot} | {c['exact']} | {c['partial']} | {c['rejected']} | {c['no_data']} |"
+            f"| {b} | {mod} | {c['exact']} | {c['partial']} | {c['rejected']} | {c['native']} |"
         )
     lines.append("")
     return "\n".join(lines) + "\n"
@@ -393,6 +445,12 @@ def main() -> int:
         "--output-dir", default=str(PROJECT_ROOT / "data"),
         help="Where to write rq3_validity.csv and rq3_validity_summary.md.",
     )
+    parser.add_argument(
+        "--categories", default=None,
+        help="Path to bug_categories.csv; uses transplant_outcome to decide "
+             "which bugs the agent modified. Without it, falls back to "
+             "dispatch_value != 0 (cannot see testcase-only edits).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -400,6 +458,8 @@ def main() -> int:
     benchmarks_root = Path(args.benchmarks_root).resolve()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    categories = load_categories(Path(args.categories) if args.categories else None)
 
     dirs = find_benchmark_dirs(benchmarks_root)
     if args.benchmark:
@@ -412,7 +472,7 @@ def main() -> int:
     all_rows: list[dict] = []
     for d in dirs:
         logger.info("Analyzing %s ...", d.name)
-        all_rows.extend(analyze_benchmark(d))
+        all_rows.extend(analyze_benchmark(d, categories))
 
     summary = summarize(all_rows)
 
@@ -425,8 +485,10 @@ def main() -> int:
     classified = sum(overall[v] for v in ("exact", "partial", "rejected"))
     logger.info("")
     logger.info("=== RQ3 validity summary ===")
-    logger.info("benchmarks: %d   bugs analyzed: %d   classified: %d   no_data: %d",
-                len(dirs), sum(overall.values()), classified, overall["no_data"])
+    logger.info("benchmarks: %d   shipped: %d   agent-modified (classified): %d   "
+                "native (excluded): %d   no_data: %d",
+                len(dirs), sum(overall.values()), classified,
+                overall["native"], overall["no_data"])
     for v in ("exact", "partial", "rejected"):
         pct = (overall[v] / classified * 100) if classified else 0.0
         logger.info("  %-10s %3d  (%.1f%% of classified)", v, overall[v], pct)
