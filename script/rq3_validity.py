@@ -6,21 +6,25 @@ For each (benchmark, bug) pair, compare the canonical OSV crash log in
 ``crashes/<bug>.txt``. Produce a three-tier verdict matching the
 ``ndss2027_paper_structure_plan.md`` RQ3 definition:
 
-* ``exact``    — same sanitizer class + same top project frame
-                 + same top-3 (function, file) fingerprint.
-* ``partial``  — same sanitizer class + non-empty project-frame or
-                 source-file overlap (but not exact). The "vulnerable
-                 code path is shared even if line numbers / files
-                 drifted across commits" case.
-* ``rejected`` — different sanitizer class, OR no project-frame and no
-                 file overlap. Likely an agent-introduced confounder
-                 rather than the historical bug.
+* ``exact``    — same sanitizer class + the innermost non-harness *site*
+                 matches (shared function name and same file).
+* ``partial``  — the innermost site matches but the sanitizer class
+                 differs, OR same sanitizer class plus a shared
+                 *discriminating* frame in both top-3 sites.
+* ``rejected`` — neither. Likely an agent-introduced confounder rather
+                 than the historical bug.
 * ``no_data``  — one or both crash logs missing a usable stack /
                  sanitizer SUMMARY. Excluded from rate denominators.
 
-All comparison primitives are imported from existing modules
-(``bug_verify``, ``sideeffect.duplication_report``); this script is
-pure glue.
+Frames sharing a program counter are grouped into one "site", so a small
+static helper inlined at the fault site cannot displace the real function
+name. Frames without ``:<line>`` are kept -- dropping them mistakes a
+caller for the fault site.
+
+**Specificity is measured, not assumed.** Negative control over every
+same-benchmark mismatched ``(reference_i, post_j)`` pair (17,518 pairs):
+this rule accepts 4.8%; the rule it replaced accepted 80.2%. See
+``notes/methodology/rq3_oracle_specificity.md`` in the paper repo.
 """
 from __future__ import annotations
 
@@ -81,120 +85,172 @@ def _is_infra(func: str, path: str) -> bool:
     return bool(_INFRA_FUNC_RE.match(func)) or bool(_INFRA_PATH_RE.match(path))
 
 
-def _clean_project_frames(text: str) -> list[tuple[str, str, int | None]]:
-    """All real project frames (cleaned func name; relpath + line preserved)."""
-    out: list[tuple[str, str, int | None]] = []
-    # extract_frames returns frames in /src/ with paths relative to /src/<proj>/.
-    # We need the full path again to apply _INFRA_PATH_RE; re-extract from raw.
-    for m in re.finditer(
-        r"#\d+\s+\S+\s+in\s+(.+?)\s+(/\S+?):(\d+)(?::\d+)?\s*$",
-        text or "", re.MULTILINE,
-    ):
-        func = m.group(1).strip()
-        path = m.group(2).strip()
-        line = int(m.group(3))
-        if _is_infra(func, path):
+# A stack frame: leading "#N  0xADDR in <func> <path>[:line[:col]]".
+# The line/column suffix is OPTIONAL on purpose: translation units built
+# without line info emit "<func> /src/proj/file.c" with no ":<line>", and
+# dropping those frames silently mistakes a *caller* for the fault site.
+# (Same defect as `fuzzbench_triage.parse_stacktrace_frames`; see
+# two_level_attribution_plan.md threat T5.)
+_FRAME_RE = re.compile(
+    r"^\s*#\d+\s+(0x[0-9a-fA-F]+)\s+in\s+(.+?)\s+(\S+?)(?::(\d+))?(?::\d+)?\s*$",
+    re.MULTILINE,
+)
+
+# One "site" = one program counter. Inlining makes a single PC report several
+# nested function names; they are the same fault site, so they are grouped.
+# funcs is innermost-first.
+Site = tuple  # (funcs: tuple[str, ...], relpath: str, line: int | None)
+
+
+def _sites(text: str) -> list[Site]:
+    """Project frames grouped into inline-sites, innermost first.
+
+    Grouping by PC is what removes the small-static-helper artifacts: a
+    `sw32_` or `_blosc_getitem` inlined at the fault site otherwise displaces
+    the real function name and makes two reports of the same bug disagree.
+    """
+    out: list[list] = []
+    prev_addr = None
+    for m in _FRAME_RE.finditer(text or ""):
+        addr, func, path, line = m.group(1), m.group(2).strip(), m.group(3), m.group(4)
+        func = _clean_func(func.split("(")[0].strip())
+        if _is_infra(func, path) or "/src/" not in path:
             continue
-        # Keep relative-to-project path for portable comparison.
-        rel = "/".join(path.split("/")[3:]) if path.startswith("/src/") else path
-        out.append((_clean_func(func), rel, line))
-    return out
+        rel = path.split("/src/", 1)[1]
+        rel = rel.split("/", 1)[1] if "/" in rel else rel
+        li = int(line) if line else None
+        if prev_addr is not None and addr == prev_addr and out:
+            if func not in out[-1][0]:
+                out[-1][0].append(func)
+            if out[-1][2] is None:
+                out[-1][2] = li
+        else:
+            out.append([[func], rel, li])
+        prev_addr = addr
+    return [(tuple(f), p, l) for f, p, l in out]
 
 
-def _first_top(frames: list[tuple[str, str, int | None]]) -> str:
-    return frames[0][0] if frames else ""
+def _top_site(sites: list[Site]) -> Site:
+    """Innermost site that is not purely harness code."""
+    for funcs, path, line in sites:
+        if set(funcs) - _HARNESS_FUNCS:
+            return (funcs, path, line)
+    return ((), "", None)
 
 
-def _top3_fingerprint(frames: list[tuple[str, str, int | None]]) -> tuple:
-    """Top-3 (function, file) tuples; ignores line numbers (drift across commits)."""
-    return tuple((f, p) for f, p, _ in frames[:3])
+def _first_top(sites: list[Site]) -> str:
+    funcs, _, _ = _top_site(sites)
+    return funcs[0] if funcs else ""
 
 
-def _file_set(frames: list[tuple[str, str, int | None]]) -> set[str]:
-    return {p.split("/")[-1] for _, p, _ in frames}
+def _top3_fingerprint(sites: list[Site]) -> tuple:
+    """Top-3 (functions, file) tuples; ignores line numbers (drift across commits)."""
+    return tuple((f, p) for f, p, _ in sites[:3])
 
 
-def _func_set(frames: list[tuple[str, str, int | None]]) -> set[str]:
-    return {f for f, _, _ in frames}
+def _top3_funcs(sites: list[Site]) -> set[str]:
+    return {f for funcs, _, _ in sites[:3] for f in funcs} - _HARNESS_FUNCS
 
 
-def classify(orig_text: str, post_text: str) -> tuple[str, dict]:
-    """Apply the 3-tier RQ3 rule using cleaned project frames.
+def _file_set(sites: list[Site]) -> set[str]:
+    return {p.split("/")[-1] for _, p, _ in sites}
+
+
+def _func_set(sites: list[Site]) -> set[str]:
+    return {f for funcs, _, _ in sites for f in funcs}
+
+
+def rare_predicate(df: Counter | None, n_bugs: int):
+    """Return f(name) -> bool: is this function *discriminating* in this benchmark?
+
+    A frame shared by most of a benchmark's bugs (the common call funnel, e.g.
+    `ndpi_workflow_process_packet`) carries no evidence that two reports are the
+    same bug. Only frames appearing in <=25% of the benchmark's reference logs
+    count toward the partial tier.
+
+    With df=None there is no benchmark context and every frame is treated as
+    discriminating -- a strictly weaker rule, used only for one-off calls.
+    """
+    if df is None:
+        return lambda _f: True
+    threshold = max(1, 0.25 * n_bugs)
+    return lambda f: df.get(f, 0) <= threshold
+
+
+def classify(orig_text: str, post_text: str,
+             df: Counter | None = None, n_bugs: int = 0) -> tuple[str, dict]:
+    """Apply the 3-tier RQ3 rule over inline-grouped project sites.
 
     Cleaning steps (both sides):
       * Drop sanitizer / libFuzzer / libc infrastructure frames.
       * Strip dispatch-wrapping `_osv_\\d+_\\d+` suffix from function names.
+      * Group frames sharing a program counter into one inline-site.
 
     Verdict:
-      * **exact**    — same sanitizer class + same first cleaned project
-                       frame + same top-3 (function, file) fingerprint.
-      * **partial**  — same first cleaned project frame (regardless of
-                       sanitizer class — UBSAN catching what ASan would
-                       have surfaced as SEGV is the same bug), OR same
-                       sanitizer class with non-empty stack overlap, OR
-                       *drift*: different sanitizer class AND different
-                       top frame but >=2 shared non-harness project funcs.
-                       The drift tier catches cases where heap-layout
-                       changes on the merged binary shift which ASAN
-                       check fires first while the vulnerable code area
-                       is unchanged (e.g. SEGV in restore_space ↔
-                       heap-UAF in ptr_struct_mark, both inside the
-                       same GC traversal).
-      * **rejected** — none of the above: different top, different
-                       class, and no/only-harness overlap.
+      * **exact**    — same sanitizer class AND the innermost non-harness
+                       site matches (shared function name *and* same file).
+      * **partial**  — the innermost site matches but the sanitizer class
+                       differs (a stale pointer surfaces as heap-UAF or as
+                       SEGV depending on allocator state; an out-of-bounds
+                       read lands in a redzone or an unmapped page). This
+                       is a *narrow* allowance: it requires the same
+                       function in the same file, not merely overlap.
+                       OR: same sanitizer class and a shared
+                       **discriminating** frame (see `rare_predicate`)
+                       present in both top-3 sites.
+      * **rejected** — none of the above.
       * **no_data**  — at least one log lacks a sanitizer SUMMARY.
+
+    `df` / `n_bugs` supply the benchmark's function document-frequency so
+    the partial tier can ignore the common call funnel. Specificity was
+    measured by negative control over all same-benchmark mismatched
+    (reference_i, post_j) pairs: this rule accepts 4.8% of them, versus
+    80.2% for the pre-2026-08 rule it replaces.
     """
     orig_class, orig_dir = extract_sanitizer_class(orig_text)
     post_class, post_dir = extract_sanitizer_class(post_text)
-    orig_frames = _clean_project_frames(orig_text)
-    post_frames = _clean_project_frames(post_text)
-    orig_top = _first_top(orig_frames)
-    post_top = _first_top(post_frames)
-    orig_fp = _top3_fingerprint(orig_frames)
-    post_fp = _top3_fingerprint(post_frames)
-    orig_files = _file_set(orig_frames)
-    post_files = _file_set(post_frames)
-    orig_funcs = _func_set(orig_frames)
-    post_funcs = _func_set(post_frames)
+    orig_sites = _sites(orig_text)
+    post_sites = _sites(post_text)
+    o_funcs, o_file, _ = _top_site(orig_sites)
+    p_funcs, p_file, _ = _top_site(post_sites)
+    orig_fp = _top3_fingerprint(orig_sites)
+    post_fp = _top3_fingerprint(post_sites)
 
     details = {
         "orig_class": orig_class or "",
         "orig_dir": orig_dir or "",
-        "orig_top": orig_top,
-        "orig_top3": "|".join(f"{f}@{p}" for f, p in orig_fp),
+        "orig_top": o_funcs[0] if o_funcs else "",
+        "orig_top3": "|".join(f"{'/'.join(f)}@{p}" for f, p in orig_fp),
         "post_class": post_class or "",
         "post_dir": post_dir or "",
-        "post_top": post_top,
-        "post_top3": "|".join(f"{f}@{p}" for f, p in post_fp),
-        "shared_funcs": len(orig_funcs & post_funcs),
-        "shared_files": len(orig_files & post_files),
+        "post_top": p_funcs[0] if p_funcs else "",
+        "post_top3": "|".join(f"{'/'.join(f)}@{p}" for f, p in post_fp),
+        "shared_funcs": len(_func_set(orig_sites) & _func_set(post_sites)),
+        "shared_files": len(_file_set(orig_sites) & _file_set(post_sites)),
     }
 
     if not orig_class or not post_class:
         return "no_data", details
 
-    same_top = bool(orig_top and post_top and orig_top == post_top)
-    same_fp3 = bool(orig_fp and post_fp and orig_fp == post_fp)
-    if orig_class == post_class and same_top and same_fp3:
-        return "exact", details
-    if same_top:
-        return "partial", details
-    if orig_class == post_class and ((orig_funcs & post_funcs) or (orig_files & post_files)):
-        return "partial", details
-
-    # Drift tier: same vulnerable code area, different sanitizer class.
-    # Heap-layout differences on the merged binary commonly shift which
-    # ASAN check fires first while the underlying vulnerability is the
-    # same. Require >=2 shared non-harness project funcs to avoid
-    # accepting "harness-frame only" coincidences (e.g. ndpi cases
-    # where the sole shared frame is LLVMFuzzerTestOneInput).
-    nontrivial_funcs = (orig_funcs & post_funcs) - _HARNESS_FUNCS
-    if len(nontrivial_funcs) >= 2:
+    same_site = bool(set(o_funcs) & set(p_funcs)) and o_file == p_file
+    if same_site:
+        if orig_class == post_class:
+            return "exact", details
         details["note"] = (
-            f"sanitizer-class drift: {orig_class} -> {post_class} "
-            f"with {len(nontrivial_funcs)} shared non-harness funcs"
+            f"sanitizer-class drift at an identical fault site: "
+            f"{orig_class} -> {post_class}"
         )
         return "partial", details
+
+    if orig_class == post_class:
+        is_rare = rare_predicate(df, n_bugs)
+        shared = {f for f in _top3_funcs(orig_sites) & _top3_funcs(post_sites)
+                  if is_rare(f)}
+        if shared:
+            details["note"] = (
+                "shared discriminating frame(s): " + ",".join(sorted(shared))
+            )
+            return "partial", details
 
     return "rejected", details
 
@@ -208,9 +264,27 @@ def find_benchmark_dirs(root: Path) -> list[Path]:
     return out
 
 
+def _benchmark_df(bench_dir: Path, bug_ids) -> tuple[Counter, int]:
+    """Document frequency of each function across this benchmark's reference logs.
+
+    Used to tell a discriminating frame from the benchmark's common call
+    funnel; see `rare_predicate`.
+    """
+    df: Counter = Counter()
+    n = 0
+    for bug_id in bug_ids:
+        orig = bench_dir / "original-crashes" / f"{bug_id}.txt"
+        if not orig.is_file():
+            continue
+        n += 1
+        df.update(_func_set(_sites(orig.read_text(errors="replace"))) - _HARNESS_FUNCS)
+    return df, n
+
+
 def analyze_benchmark(bench_dir: Path) -> list[dict]:
     """One row per bug. Skips bugs lacking either crash log."""
     meta = json.loads((bench_dir / "bug_metadata.json").read_text())
+    df, n_bugs = _benchmark_df(bench_dir, meta["bugs"].keys())
     rows = []
     for bug_id, info in meta["bugs"].items():
         orig = bench_dir / "original-crashes" / f"{bug_id}.txt"
@@ -222,6 +296,7 @@ def analyze_benchmark(bench_dir: Path) -> list[dict]:
             verdict, details = classify(
                 orig.read_text(errors="replace"),
                 post.read_text(errors="replace"),
+                df=df, n_bugs=n_bugs,
             )
         rows.append({
             "benchmark": bench_dir.name,
@@ -258,9 +333,9 @@ def render_markdown(summary: dict[str, Counter]) -> str:
         "`ndss2027_paper_structure_plan.md` definition:"
     )
     lines.append("")
-    lines.append("- **exact** — same sanitizer class + same top project frame + same top-3 (function, file) fingerprint.")
-    lines.append("- **partial** — same sanitizer class + non-empty project-frame or source-file overlap (line/file drift across commits is OK).")
-    lines.append("- **rejected** — different sanitizer class, or no overlap.")
+    lines.append("- **exact** — same sanitizer class + the innermost non-harness *site* matches (shared function name and same file). Frames sharing a program counter are grouped, so inlining does not split a match.")
+    lines.append("- **partial** — the innermost site matches but the sanitizer class differs (allocator state decides whether a stale pointer reads as heap-UAF or SEGV), OR same sanitizer class plus a shared **discriminating** frame (one appearing in <=25% of this benchmark's reference logs) in both top-3 sites.")
+    lines.append("- **rejected** — neither: the fault sites differ and no discriminating frame is shared.")
     lines.append("- **no_data** — at least one log lacks a usable sanitizer SUMMARY; excluded from rate denominators.")
     lines.append("")
     lines.append("## Overall")
