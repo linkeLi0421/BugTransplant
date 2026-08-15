@@ -266,7 +266,7 @@ def main():
 
     kinds = defaultdict(lambda: defaultdict(lambda: {
         "classes": 0, "crashes": 0, "fuzzers": set(), "examples": [],
-        "sanitizers": Counter(), "masks": set()}))
+        "sanitizers": Counter(), "masks": set(), "vetoed": set()}))
     # Every fault site in the campaign, by level-1 verdict.  Needed to ask
     # whether a composition-dependent site is EVER reached without
     # composition -- if single grafts reach it too, composition did not create
@@ -298,6 +298,8 @@ def main():
             k["crashes"] += int(r["class_crashes"])
             k["fuzzers"].add(r["fuzzer"])
             k["sanitizers"][r["sanitizer"]] += 1
+            k["vetoed"].update(b for b in
+                               r.get("matched_vetoed_bit_off", "").split("|") if b)
             k["masks"].add(r["repro_masks"])
             if len(k["examples"]) < 3:
                 k["examples"].append(r["testcase"])
@@ -348,20 +350,28 @@ def main():
                 if v.get("crash_line") and suffix(fi, str(v.get("crash_file"))):
                     d = abs(int(li or 0) - int(v["crash_line"])) if li else ""
                     dist = d if dist == "" else min(dist, d)
-            # Is this a bug we already know about?  Three ways to say yes,
-            # strongest first; the crash site's relation to the patch is a
-            # separate question and does not settle identity.
-            if ml and set(ml) & set(cl):
-                ident, ibug = "same site as a graft that must be on", sorted(set(ml) & set(cl))
-            elif resolved:
-                ident, ibug = "inside the code of a graft that must be on", resolved
-            elif ml:
-                ident, ibug = "same site as a bug whose graft stays off", ml
+            # Is this a bug we already know about?  A crash reproduces under
+            # some set of grafts being ON; a bug is "on" for it if its bit is
+            # in that set, or if it is ungated and therefore always on.  Ask
+            # which of those the crash signature lands on.
+            gated_n = {b for b, v in META[n].items() if v.get("dispatch_value")}
+            on_gated = sorted(b for b in ml if b in gated_n and b in cl)
+            on_ungated = sorted(b for b in ml if b not in gated_n)
+            off_only = sorted(k["vetoed"]) if not ml else []
+            if on_gated:
+                ident, ibug = "matches a bug that is on (gated, bit set)", on_gated
+            elif on_ungated:
+                ident, ibug = ("matches a bug that is on (ungated, always active)",
+                               on_ungated)
+            elif ml or off_only:
+                ident, ibug = ("matches only a bug whose bit is off",
+                               ml or off_only)
             else:
-                ident, ibug = "no catalogued bug at this site", []
+                ident, ibug = "matches nothing", []
             rows.append({
                 "benchmark": n, "verdict": verdict,
                 "identified": ident, "identified_bug": "|".join(ibug),
+                "also_matches_a_bit_off_bug": "|".join(sorted(k["vetoed"])),
                 "classes": k["classes"], "crashes": k["crashes"],
                 "top_function": fn, "top_file": fi, "top_line": li,
                 "candidates": cands, "matched_bug": mm,
@@ -402,86 +412,80 @@ def main():
         # Which catalogued bug is this?  Asked first, because it is the
         # question; where the crash sits in the patch is evidence for it.
         M.append("## Is it a bug we already know about?\n")
-        M.append("Level 1 says which grafts **must be switched on** for the "
-                 "crash to reproduce at all; level 2 says which bug's "
-                 "recorded crash site the fault lands on. A bug named by "
-                 "both is the strongest identification available.\n")
+        M.append("A crash reproduces under some set of grafts being **on** — "
+                 "level 1 establishes which. A catalogued bug counts as *on* "
+                 "for that crash if its dispatch bit is in that set, or if it "
+                 "is ungated and therefore always active. The question here is "
+                 "which of those the crash signature lands on.\n")
         M.append("| | kinds | classes | |")
         M.append("|---|--:|--:|---|")
         idc, idcl = Counter(), Counter()
         for r in rows:
             idc[r["identified"]] += 1
             idcl[r["identified"]] += r["classes"]
+        N = sum(idcl.values())
         allbugs = {b for r in rows for b in r["identified_bug"].split("|") if b}
-        for k in ("same site as a graft that must be on", "inside the code of a graft that must be on",
-                  "same site as a bug whose graft stays off", "no catalogued bug at this site"):
-            if not idc[k]:
-                continue
-            M.append(f"| {k} | {idc[k]} | {idcl[k]} | "
-                     f"{100*idcl[k]/sum(idcl.values()):.0f}% |")
-        known = sum(idcl.values()) - idcl["no catalogued bug at this site"]
-        M.append(f"| **catalogued bug identified** | | **{known}** | "
-                 f"**{100*known/sum(idcl.values()):.0f}%** |")
-        M.append(f"\n{len(allbugs)} distinct catalogued bugs are named. "
-                 "*Same site as a graft that must be on* is both signals agreeing: the crash "
-                 "requires that bug's dispatch bit and faults at the site its "
-                 "reference crash records. *Same site as a bug whose graft stays off* is "
-                 "unmasking in the other direction — the grafts that had to be on "
-                 "made "
-                 "a different catalogued bug reachable.\n")
-        if idc["no catalogued bug at this site"]:
-            M.append("### The ones that are not\n")
-            for r in rows:
-                if r["identified"] != "no catalogued bug at this site":
-                    continue
-                key = (r["benchmark"], r["top_function"], r["top_file"],
-                       r["top_line"])
-                o = site_l1[key]
-                alt = o["graft-triggered"] + o["graft-independent"]
-                M.append(f"- **{r['benchmark']}** `{r['top_function']}` "
-                         f"{(r['top_file'] or '?').split('/')[-1]}:"
-                         f"{r['top_line'] or '?'} — {r['classes']} class"
-                         f"{'es' if r['classes'] > 1 else ''}, {r['crashes']} "
-                         f"crash{'es' if r['crashes'] > 1 else ''}, "
-                         f"{r['sanitizer']}. Only reproduces with "
-                         f"{len(r['candidates'].split('|'))} grafts on. "
-                         + (f"The same fault site is reached by {alt} classes "
-                            "that require no composition at all, so the site is "
-                            "not new." if alt else
-                            "**No other class reaches this site.**")
-                         + f" `{r['example_testcase']}`")
-            M.append("")
-        cdsites = {(r["benchmark"], r["top_function"], r["top_file"],
-                    r["top_line"]) for r in rows}
-        uniq = [s for s in cdsites
-                if not (site_l1[s]["graft-triggered"]
-                        + site_l1[s]["graft-independent"])]
-        M.append(f"**{len(cdsites)-len(uniq)} of the {len(cdsites)} distinct "
-                 "fault sites are also reached without composition** — by a "
-                 "single graft or by no graft at all. A site that only a "
-                 "multi-bit mask can reach is the shape a composition-created "
-                 "fault would have.\n")
-        for s in uniq:
-            b = {r["identified_bug"] for r in rows
-                 if (r["benchmark"], r["top_function"], r["top_file"],
-                     r["top_line"]) == s and r["identified_bug"]}
-            M.append(f"- Only under composition: **{s[0]}** `{s[1]}` "
-                     f"{(s[2] or '?').split('/')[-1]}:{s[3] or '?'}"
-                     + (f" — but it is {'/'.join(sorted(b))}'s own recorded "
-                        "crash site, reached only once another graft is on."
-                        if b else " — no catalogued bug."))
+        ON = ("matches a bug that is on (gated, bit set)",
+              "matches a bug that is on (ungated, always active)")
+        on_cl = sum(idcl[k] for k in ON)
+        if on_cl:
+            M.append(f"| **(1) matches a bug that is on** | | **{on_cl}** | "
+                     f"**{100*on_cl/N:.0f}%** |")
+        for k in ON:
+            if idc[k]:
+                M.append(f"| &nbsp;&nbsp;· {k.split('(')[1].rstrip(')')} | "
+                         f"{idc[k]} | {idcl[k]} | {100*idcl[k]/N:.0f}% |")
+        for lbl, k in (("(2) matches some other bug — its bit was off",
+                        "matches only a bug whose bit is off"),
+                       ("(3) matches nothing", "matches nothing")):
+            M.append(f"| **{lbl}** | {idc[k]} | **{idcl[k]}** | "
+                     f"**{100*idcl[k]/N:.0f}%** |")
+        M.append(f"\n{len(allbugs)} distinct catalogued bugs are named.")
+        off = sum(r["classes"] for r in rows
+                  if r["also_matches_a_bit_off_bug"]
+                  and r["identified"].startswith("matches a bug that is on"))
+        if off:
+            M.append(f"\n**Category 2 counts only classes where an off bug is "
+                     f"the *sole* match. A further {off} classes carry such a "
+                     "match alongside a valid one** — the crash signature also "
+                     "points at a gated bug whose code never ran, and level 1 "
+                     "rules it out. Column `also_matches_a_bit_off_bug`; "
+                     "without that veto these would be credited to a bug that "
+                     "was switched off.")
+        rr = sum(r["classes"] for r in rows
+                 if r["identified"] == "matches nothing" and r["resolved_bug"])
+        if rr:
+            rb = {b for r in rows if r["identified"] == "matches nothing"
+                  for b in r["resolved_bug"].split("|") if b}
+            M.append(f"\n**{rr} of the category-3 classes are identifiable "
+                     "anyway**: they fault *inside the grafted code* of a bug "
+                     f"that is on ({len(rb)} distinct), a few lines from where "
+                     "that bug's reference crash was recorded, so the "
+                     "signature misses on the line and not on the identity. "
+                     f"That leaves {idcl['matches nothing']-rr} classes with "
+                     "no account at all.")
         M.append("")
-        rc = sum(r["classes"] for r in rows if r["resolved_bug"])
-        if rc:
-            rb = {b for r in rows if r["resolved_bug"]
-                  for b in r["resolved_bug"].split("|")}
-            M.append(f"**{rc} of these classes ({100*rc/sum(r['classes'] for r in rows):.0f}%) "
-                     f"are resolved by where they crash**: the fault is inside "
-                     f"the code of a graft that had to be switched on for it "
-                     f"({len(rb)} distinct bugs), a few lines from where that "
-                     f"bug's reference crash was recorded. Level 2 missed them "
-                     f"on the exact line, not on the identity. Column "
-                     f"`resolved_bug`.\n")
+        if p == "composition_dependent":
+            cdsites = {(r["benchmark"], r["top_function"], r["top_file"],
+                        r["top_line"]) for r in rows}
+            uniq = [s for s in cdsites
+                    if not (site_l1[s]["graft-triggered"]
+                            + site_l1[s]["graft-independent"])]
+            M.append(f"\n**{len(cdsites)-len(uniq)} of the {len(cdsites)} "
+                     "distinct fault sites are also reached without "
+                     "composition** — by a single graft, or by none. A site "
+                     "only a multi-bit mask can reach is the shape a "
+                     "composition-created fault would have.\n")
+            for s_ in uniq:
+                b = {r["identified_bug"] for r in rows
+                     if (r["benchmark"], r["top_function"], r["top_file"],
+                         r["top_line"]) == s_ and r["identified_bug"]}
+                M.append(f"- Only under composition: **{s_[0]}** `{s_[1]}` "
+                         f"{(s_[2] or '?').split('/')[-1]}:{s_[3] or '?'}"
+                         + (f" — but it is {'/'.join(sorted(b))}'s own "
+                            "recorded crash site, reached only once another "
+                            "graft is on." if b else " — no catalogued bug."))
+            M.append("")
         M.append("## Where the crash site sits relative to the transplant\n")
         M.append("| verdict | kinds | classes | meaning |")
         M.append("|---|--:|--:|---|")
