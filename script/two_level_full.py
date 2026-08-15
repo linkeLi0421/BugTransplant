@@ -167,6 +167,20 @@ def main():
             strict, loose, top = match_top(fr, tg)
             cands = [b for b in (r.get("candidates") or "").split("|") if b]
             lvl1 = r["level1"]
+            # Level 1 vetoes level 2.  A GATED bug's grafted code only runs
+            # when its bit is set, so if the crash reproduces with that bit
+            # CLEAR the bug cannot be the cause -- whatever the stack says.
+            # The site is real but shared: the fault is at a location that
+            # exists in the target regardless of the graft.  Measured over the
+            # ten targets this vetoes a bug in 24% of matched classes, and
+            # every named bug in 394 of them.
+            masks = [int(x) for x in (r.get("repro_masks") or "").split()]
+            minm = min(masks) if masks else None
+            vetoed = []
+            if minm is not None:
+                dv = {b: meta.get(b, {}).get("dispatch_value") for b in strict}
+                vetoed = [b for b in strict if dv[b] and not (minm & dv[b])]
+                strict = [b for b in strict if b not in vetoed]
             if not strict:
                 lvl2 = "no-match"
             elif not cands or set(strict) & set(cands):
@@ -200,6 +214,7 @@ def main():
                 "top_line": (top or ("", "", ""))[2] or "",
                 "level2": lvl2,
                 "matched_bug": "|".join(strict),
+                "matched_vetoed_bit_off": "|".join(vetoed),
                 "matched_basename_only": "|".join(loose),
                 "ambiguous": len(strict) > 1,
                 "credited_bug": "|".join(credited),
