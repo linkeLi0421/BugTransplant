@@ -72,14 +72,23 @@ compile
 
 6. **Verify both directions**: the testcase must crash WITH your code change and NOT crash
    without it. The crash must be the same vulnerability -- but it does NOT need an identical
-   stack trace. A crash is a valid match if ALL of these hold:
-   - **Same sanitizer class** (e.g. both `AddressSanitizer: heap-buffer-overflow`)
-   - **Same access direction** (both READ, or both WRITE)
-   - **Same code area**: crash is in the same source file, or in a direct caller/callee
-     within the same subsystem
+   stack trace, an identical crash line, or an identical sanitizer class.
+
+   What matters is **where** the crash happens. A crash is a valid match if BOTH hold:
+   - **Same crash site**: the crashing function is the one the original crashed in. If that
+     function was renamed, split, or inlined away between the two commits, then a function
+     from the original stack must appear at the crash site, in the same subsystem.
    - **Overlapping call chain**: at least one function from the original stack appears
      anywhere in the new stack (not just the top frames -- check the full chain including
      callers and the allocating function)
+
+   **Do NOT require the sanitizer class to match, and do not keep editing until it does.**
+   Whether the same corrupted pointer surfaces as a `heap-buffer-overflow`, a
+   `heap-use-after-free`, or a `SEGV` is decided by allocator state, not by whether you
+   reproduced the bug -- the same graft can report different classes on different runs or
+   after unrelated code moves. Tuning the patch to force a particular class is overfitting
+   and produces a worse graft. Likewise ignore the access direction (READ vs WRITE): most
+   sanitizer classes do not report one at all.
 
    Code refactoring between commits can shift the exact crash point within the same
    vulnerable path. What matters is that the same underlying vulnerability is exercised,
