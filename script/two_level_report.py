@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fuzzbench_triage import parse_stacktrace_frames  # noqa: E402
+from two_level_triage import parse_frames_all  # noqa: E402
 
 csv_path, bench_dir, cov_tar, workdir, out_dir, name = sys.argv[1:7]
 BD, WORK, OUT = Path(bench_dir), Path(workdir), Path(out_dir)
@@ -46,7 +47,7 @@ def frames(r):
     p = LOGS / f"{r['testcase']}.log.gz"
     if not p.is_file():
         return []
-    return parse_stacktrace_frames(gzip.open(p, "rt").read())
+    return parse_frames_all(gzip.open(p, "rt").read())
 
 
 def kind_key(r, fr):
@@ -69,7 +70,7 @@ def sig_key(r, fr):
     category: a fault seen both with grafts required and with none required is
     a pre-existing fault the graft opened a *new path* to, not a new bug.
     """
-    top = fr[0] if fr else ("", "", 0)
+    top = fr[0] if fr else ("", "", "")
     return (r["sanitizer"] or "?", top[0], top[1], top[2])
 
 
@@ -142,9 +143,10 @@ def render_stack(e, o):
     for i, (f, fl, l) in enumerate(fr):
         mark = ""
         for bug, (cf, cl) in sites.items():
-            if l == cl and fl.split("/")[-1] == cf.split("/")[-1]:
+            if l and int(l) == cl and fl.split("/")[-1] == cf.split("/")[-1]:
                 mark = f"   <-- matched {bug} here (frame #{i})"
-        o.append(f"#{i:<2d} {f} @ {fl}:{l}{mark}")
+        loc = f"{fl}:{l}" if l else (fl or "(no source location)")
+        o.append(f"#{i:<2d} {f} @ {loc}{mark}")
     o.append("```")
 
 
