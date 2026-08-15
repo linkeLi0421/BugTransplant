@@ -417,36 +417,167 @@ def main():
             w.writerow([n, fn, fi, li, c])
 
     # ---------------------------------------------------------------- table 6
-    P("\n## 6. Bugs credited per fuzzer\n")
-    perf = defaultdict(set)
-    seen_any = set()
+    # Credit is split by which level established it, because the two are not
+    # equally strong evidence.  A GATED bug is credited causally: the crash
+    # provably needs its dispatch bit.  An UNGATED bug has no bit to toggle, so
+    # its credit rests entirely on the crash site matching -- that is the
+    # category to look at when asking how much of the fuzzer comparison stands
+    # on signature matching.
+    P("\n## 6. Bugs credited per fuzzer, per target\n")
+    tf = defaultdict(lambda: defaultdict(set))      # (target, fuzzer) -> kind
+    tft = defaultdict(lambda: defaultdict(set))     # (target, fuzzer, trial)
+    trials_seen = defaultdict(set)                  # (target, fuzzer) -> trials
+    seen_any = defaultdict(set)
     for n, rows in sorted(clean.items()):
         idx = Path(a.data) / f"{n}_crash_index.csv"
         if not idx.is_file():
             continue
+        gated = {b for b, v in META[n].items() if v.get("dispatch_value")}
         verdict = {(r["crash_key"], r["canon_mask"]): r for r in rows}
         for r in csv.DictReader(open(idx)):
+            trials_seen[(n, r["fuzzer"])].add(r["trial"])
             v = verdict.get((r["crash_key"], r["canon_mask"]))
-            if not v or not v["credited_bug"]:
+            if not v:
                 continue
-            for b in v["credited_bug"].split("|"):
-                perf[r["fuzzer"]].add((n, b))
-                seen_any.add((n, b))
-    if perf:
-        P("| fuzzer | distinct bugs |")
-        P("|---|--:|")
-        for fz, s in sorted(perf.items(), key=lambda kv: -len(kv[1])):
-            P(f"| {fz} | {len(s)} |")
-        P(f"\nUnion over all fuzzers: {len(seen_any)} bugs.")
-        P("\nA bug is credited to a fuzzer when that fuzzer produced a crash in "
-          "a class attributed to it -- causally for gated bugs, by crash site "
-          "for ungated ones.")
-        with open(outdir / "per_fuzzer_bugs.csv", "w", newline="") as fh:
-            w = csv.writer(fh)
-            w.writerow(["fuzzer", "benchmark", "bug_id"])
-            for fz, s in sorted(perf.items()):
-                for n, b in sorted(s):
-                    w.writerow([fz, n, b])
+            causal = {b for b in v["candidates"].split("|") if b}
+            bysig = {b for b in v["matched_bug"].split("|") if b}
+            for b in causal & gated:
+                tf[(n, r["fuzzer"])]["gated"].add(b)
+                tft[(n, r["fuzzer"], r["trial"])]["gated"].add(b)
+                seen_any["gated"].add((n, b))
+            for b in bysig - gated:
+                tf[(n, r["fuzzer"])]["ungated"].add(b)
+                tft[(n, r["fuzzer"], r["trial"])]["ungated"].add(b)
+                seen_any["ungated"].add((n, b))
+    FZ = sorted({f for _, f in trials_seen})
+    # A campaign that archived no crash at all leaves no row in the index, and
+    # a 0 there means "no data", not "found nothing".  c-blosc2 x libafl is the
+    # clear case (0 trials); gstoraster x aflplusplus has 2 of 10.
+    P("Trials that produced any archived crash, out of 10:\n")
+    P("| target | " + " | ".join(FZ) + " |")
+    P("|---|" + "--:|" * len(FZ))
+    for n in sorted(clean):
+        P(f"| {n} | " + " | ".join(
+            (f"**{len(trials_seen[(n, f)])}**" if len(trials_seen[(n, f)]) < 10
+             else "10") for f in FZ) + " |")
+    P("\nBold marks incomplete coverage; those cells are `n/a` below, not zero.")
+    for kind, why in (("ungated", "credit rests on crash-site matching alone"),
+                      ("gated", "credit is causal -- the crash needs that bit")):
+        P(f"\n### {kind} bugs ({why})\n")
+        P("| target | in catalogue | " + " | ".join(FZ) + " | union |")
+        P("|---|--:|" + "--:|" * (len(FZ) + 1))
+        for n in sorted(clean):
+            gset = {b for b, v in META[n].items() if v.get("dispatch_value")}
+            pool = len(gset) if kind == "gated" else len(META[n]) - len(gset)
+            cells = [len(tf[(n, f)][kind]) for f in FZ]
+            uni = set().union(*[tf[(n, f)][kind] for f in FZ]) if FZ else set()
+            hi = max(cells) if cells else 0
+            out = []
+            for f, c in zip(FZ, cells):
+                if not trials_seen[(n, f)]:
+                    out.append("n/a")
+                else:
+                    out.append(f"**{c}**" if c == hi and hi else str(c))
+            P(f"| {n} | {pool} | " + " | ".join(out) + f" | {len(uni)} |")
+        tot = [sum(len(tf[(n, f)][kind]) for n in clean) for f in FZ]
+        pool = sum(sum(1 for v in META[n].values()
+                       if bool(v.get("dispatch_value")) == (kind == "gated"))
+                   for n in clean)
+        P(f"| **total** | **{pool}** | "
+          + " | ".join(f"**{c}**" for c in tot)
+          + f" | **{len(seen_any[kind])}** |")
+        if tot:
+            P(f"\nSpread {min(tot)}--{max(tot)} bugs "
+              f"({max(tot)/max(1,min(tot)):.2f}x).")
+    P("\nBold marks the best fuzzer on that target. A bug counts once per "
+      "target no matter how often it was hit, and the per-trial figures below "
+      "say how much of that is one lucky trial.\n")
+
+    # Trial ids are FuzzBench's, not 1..10, and a trial that produced no crash
+    # at all leaves no row in the crash index.  Take the trials that appear and
+    # say how many they were, rather than assuming ten.
+    P("\n### Mean per trial, ungated bugs\n")
+    P("| target | " + " | ".join(FZ) + " |")
+    P("|---|" + "--:|" * len(FZ))
+    for n in sorted(clean):
+        cells = []
+        for f in FZ:
+            trs = trials_seen[(n, f)]
+            if not trs:
+                cells.append("n/a")
+                continue
+            per = [len(tft[(n, f, tr)]["ungated"]) for tr in trs]
+            cells.append(f"{sum(per)/len(per):.1f}")
+        P(f"| {n} | " + " | ".join(cells) + " |")
+    P("\nMean distinct ungated bugs a single 24 h trial surfaces, averaged over "
+      "the trials that produced crashes. The gap between this and the union "
+      "above is how much of a fuzzer's score comes from repetition rather than "
+      "from a single run.")
+
+    with open(outdir / "per_fuzzer_bugs.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["benchmark", "fuzzer", "trial", "bug_id", "gating",
+                    "attributed_by"])
+        for (n, f, tr), kinds in sorted(tft.items()):
+            for kind, bugs in sorted(kinds.items()):
+                for b in sorted(bugs):
+                    w.writerow([n, f, tr, b, kind,
+                                "dispatch bit" if kind == "gated"
+                                else "crash site"])
+
+    # ------------------------------------------------------------ per target
+    PT = ["# Two-level attribution, per fuzz target\n",
+          "One section per target. Generated by `script/two_level_full.py`; "
+          "see `FULL_RESULTS.md` for the suite-wide tables and `README.md` for "
+          "what each column means.\n"]
+    for n in sorted(clean):
+        rows = clean[n]
+        meta = META[n]
+        gset = {b for b, v in meta.items() if v.get("dispatch_value")}
+        c = Counter(cat(r) for r in rows)
+        nat = [r for r in rows if r["level1"] == "graft-independent"]
+        m = [r for r in nat if r["matched_bug"]]
+        cd = [r for r in rows if r["level1"] == "composition-dependent"]
+        cdsites = {(r["top_function"], r["top_file"], r["top_line"]) for r in cd}
+        gseen = {b for f in FZ for b in tf[(n, f)]["gated"]}
+        useen = {b for f in FZ for b in tf[(n, f)]["ungated"]}
+        drop = sum(1 for r in ALL[n] if r["contaminated"])
+        PT.append(f"\n## {n}\n")
+        PT.append(f"{len(meta)} catalogued bugs — {len(gset)} gated, "
+                  f"{len(meta)-len(gset)} ungated. {len(rows)} replay classes "
+                  f"over {sum(int(r['class_crashes']) for r in rows)} crashes"
+                  + (f" ({drop} further classes excluded as contaminated)"
+                     if drop else "") + ".\n")
+        PT.append("| level 1 | classes | share |")
+        PT.append("|---|--:|--:|")
+        for k in ("graft-triggered", "graft-independent",
+                  "composition-dependent", "non-reproducing", "ubsan-only"):
+            PT.append(f"| {k} | {c[k]} | {100*c[k]/max(1,len(rows)):.1f}% |")
+        PT.append(f"\n**Bugs seen: {len(gseen | useen)} of {len(meta)}** — "
+                  f"{len(gseen)}/{len(gset)} gated (causally, by dispatch bit) "
+                  f"and {len(useen)}/{len(meta)-len(gset)} ungated (by crash "
+                  f"site).\n")
+        PT.append("| fuzzer | ungated bugs | gated bugs | trials with crashes |")
+        PT.append("|---|--:|--:|--:|")
+        for f in FZ:
+            k = len(trials_seen[(n, f)])
+            PT.append(f"| {f} | "
+                      + (f"{len(tf[(n, f)]['ungated'])} | "
+                         f"{len(tf[(n, f)]['gated'])}" if k else "n/a | n/a")
+                      + f" | {k} |")
+        PT.append(f"\nGraft-independent classes: {len(nat)}, of which "
+                  f"{len(m)} match a catalogued bug "
+                  f"({100*len(m)/max(1,len(nat)):.0f}%) and "
+                  f"{sum(1 for r in m if r['ambiguous'])} match more than one.")
+        if cd:
+            PT.append(f"\nComposition-dependent: {len(cd)} classes at "
+                      f"{len(cdsites)} distinct fault sites, involving "
+                      + str(len({b for r in cd for b in r["candidates"].split("|") if b}))
+                      + " bugs.")
+        else:
+            PT.append("\nComposition-dependent: none.")
+        PT.append("")
+    (outdir / "PER_TARGET.md").write_text("\n".join(PT) + "\n")
 
     (outdir / "FULL_RESULTS.md").write_text(
         "# Two-level attribution: full results\n\n"
