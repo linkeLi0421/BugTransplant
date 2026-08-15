@@ -54,6 +54,15 @@ BENCH = {
 }
 GUARD = re.compile(r"__bug_dispatch\s*\[\s*(\d+)\s*\]\s*&\s*\(\s*1\s*<<\s*(\d+)\s*\)")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+# Some transplants clone the whole function instead of gating inside it: the
+# patch adds `f_original()` (the target's behaviour) and `f_osv_2020_1715()`
+# (the bug's), and the dispatch guard sits at the call site.  A crash inside
+# such a clone is attributable by NAME, which the guard-tracking alone cannot
+# see -- the body carries no guard.
+CLONE = re.compile(r"^\s*(?:static\s+|inline\s+|const\s+|unsigned\s+|struct\s+|"
+                   r"[\w:]+\s+|\*\s*)*?(\w+)\s*\(")
+CLONE_ORIG = re.compile(r"_original$")
+CLONE_BUG = re.compile(r"_osv[_-](\d{4})[_-](\d+)$", re.I)
 
 
 def branch_states(lines):
@@ -72,17 +81,29 @@ def branch_states(lines):
     st = {}
     txt = [t for _, t in lines]
 
-    def block_end(i):
-        """Index of the line closing the brace block that starts at/after i."""
+    def block_end(i, pos=0):
+        """(line index, column) where the block opening at/after (i, pos) closes.
+
+        Character-wise, because `} else {` closes the then-block and opens the
+        else-block on ONE line: counting braces per line leaves depth at 0 and
+        the scan runs past the `else` into the target's original code.  That
+        put a graft-independent ndpi crash inside a gated block, which cannot
+        happen by construction.
+        """
         depth, seen = 0, False
         while i < len(lines):
-            depth += txt[i].count("{") - txt[i].count("}")
-            if "{" in txt[i]:
-                seen = True
-            if seen and depth <= 0:
-                return i
+            for c in range(pos, len(txt[i])):
+                ch = txt[i][c]
+                if ch == "{":
+                    depth += 1
+                    seen = True
+                elif ch == "}":
+                    depth -= 1
+                    if seen and depth <= 0:
+                        return i, c
+            pos = 0
             i += 1
-        return None
+        return None, None
 
     for idx, (no, t) in enumerate(lines):
         g = GUARD.findall(t)
@@ -92,20 +113,43 @@ def branch_states(lines):
         if "?" in t and ":" in t:              # ternary guard, all on one line
             st[no] = ("graft", bits)
             continue
-        end = block_end(idx)
+        end, col = block_end(idx)
         if end is None or "{" not in "".join(txt[idx:idx + 3]):
             st[no] = ("graft", bits)           # single-statement guard
             continue
         for k in range(idx, end + 1):
             st[lines[k][0]] = ("graft", bits)
         # the else branch, if any, holds the target's ORIGINAL code
-        e = next((c for c in (end, end + 1)
-                  if c < len(lines) and re.search(r"\belse\b", txt[c])), None)
-        if e is None:
+        if re.search(r"\belse\b", txt[end][col + 1:]):
+            e, epos = end, col + 1
+        elif end + 1 < len(lines) and re.search(r"\belse\b", txt[end + 1]):
+            e, epos = end + 1, 0
+        else:
             continue
-        eend = block_end(e)
+        eend, _ = block_end(e, epos)
         for k in range(e, (eend if eend is not None else e) + 1):
             st[lines[k][0]] = ("original", bits)
+    # Cloned functions: whatever the guards did not claim inside a clone body
+    # belongs to that clone -- `_original` is the target's own code, and
+    # `_osv_YYYY_N` is the named bug's.
+    for idx, (no, t) in enumerate(lines):
+        m = CLONE.match(t)
+        if not m or "(" not in t:
+            continue
+        name = m.group(1)
+        if CLONE_ORIG.search(name):
+            tag = ("clone-original", None)
+        else:
+            b = CLONE_BUG.search(name)
+            if not b:
+                continue
+            tag = ("clone-graft", f"OSV-{b.group(1)}-{b.group(2)}")
+        end, _ = block_end(idx)
+        if end is None:
+            continue
+        for k in range(idx, end + 1):
+            if st.get(lines[k][0], ("plain", set()))[0] == "plain":
+                st[lines[k][0]] = tag
     for no, _ in lines:
         st.setdefault(no, ("plain", set()))
     return st
@@ -191,7 +235,8 @@ def locate(patch, path, line):
             continue
         if line in added:
             state, bits = added[line]
-            return state, set(bits), True, set(bits)
+            return state, bits, True, (set(bits) if isinstance(bits, set)
+                                       else set())
         for s, e, bits in hunks:
             if s <= line <= e:
                 return "", set(), True, set(bits)
@@ -257,13 +302,26 @@ def main():
         for (n, fn, fi, li, cands, mm), k in ks.items():
             cl = [b for b in cands.split("|") if b]
             ml = [b for b in mm.split("|") if b]
-            state, abits, in_hunk, hbits = locate(PATCH[n], fi, li)
+            state, payload, in_hunk, hbits = locate(PATCH[n], fi, li)
             cand_vals = {META[n][b].get("dispatch_value") for b in cl
                          if b in META[n]}
+            abits = payload if isinstance(payload, set) else set()
             owners = sorted(OWNER[n].get(v, f"unowned:{v}")
                             for v in (abits or hbits))
-            if state == "graft" and (abits & cand_vals):
+            resolved = []
+            if state == "clone-graft":
+                owners = [payload]
+                if payload in cl:
+                    verdict, resolved = "graft-clone", [payload]
+                else:
+                    verdict = "graft-clone-other"
+            elif state == "clone-original":
+                owners, verdict = [], "graft-clone-original"
+            elif state == "graft" and (abits & cand_vals):
                 verdict = "graft-code"
+                resolved = sorted(b for b in cl
+                                  if META[n].get(b, {}).get("dispatch_value")
+                                  in abits)
             elif state == "graft":
                 verdict = "graft-code-other"
             elif state == "original":
@@ -271,7 +329,7 @@ def main():
             elif state == "plain":
                 verdict = "patch-added-ungated"
             elif in_hunk:
-                verdict = "patched-file"
+                verdict = "graft-hunk-context"
             elif any(suffix(fi, str(META[n][b].get("crash_file") or ""))
                      for b in cl if b in META[n]):
                 verdict = "candidate-file"
@@ -293,6 +351,7 @@ def main():
                     "gated" if META[n].get(b, {}).get("dispatch_value")
                     else "ungated" for b in ml),
                 "patch_owners_at_site": "|".join(owners),
+                "resolved_bug": "|".join(resolved),
                 "lines_from_candidate_site": dist,
                 "sanitizer": k["sanitizers"].most_common(1)[0][0],
                 "fuzzers": "|".join(sorted(k["fuzzers"])),
@@ -322,6 +381,17 @@ def main():
                  "classes but one question, and the same site reached with "
                  "different bug sets is listed once per set. Full data: `"
                  + p + ".csv`.\n")
+        rc = sum(r["classes"] for r in rows if r["resolved_bug"])
+        if rc:
+            rb = {b for r in rows if r["resolved_bug"]
+                  for b in r["resolved_bug"].split("|")}
+            M.append(f"**{rc} of these classes ({100*rc/sum(r['classes'] for r in rows):.0f}%) "
+                     f"are resolved by where they crash**: the fault is inside "
+                     f"the grafted code of a bug the crash causally needs "
+                     f"({len(rb)} distinct bugs), a few lines from where that "
+                     f"bug's reference crash was recorded. Level 2 missed them "
+                     f"on the exact line, not on the identity. Column "
+                     f"`resolved_bug`.\n")
         M.append("## Where the crash site sits relative to the transplant\n")
         M.append("| verdict | kinds | classes | meaning |")
         M.append("|---|--:|--:|---|")
@@ -350,9 +420,17 @@ def main():
 
 
 VERDICT = {
-    "graft-code": "the crash line is inside the dispatch-gated block of a bug "
-                  "the crash causally needs — the fault is in the "
-                  "transplanted code itself",
+    "graft-code": "**resolved** — the crash line is inside the dispatch-gated "
+                  "block of a bug the crash causally needs, so the fault is "
+                  "in that bug's transplanted code, a few lines from where "
+                  "its reference crash was recorded",
+    "graft-clone": "**resolved** — inside a cloned function carrying a bug's "
+                   "name (`f_osv_2020_1715`), and that bug is one the crash "
+                   "causally needs",
+    "graft-clone-other": "inside a bug-named clone, but not one this crash "
+                         "needs",
+    "graft-clone-original": "inside an `_original` clone — the target's own "
+                            "code, kept beside the grafted copy",
     "graft-code-other": "inside a gated block, but of a bug the crash does "
                         "not need",
     "graft-else-original": "inside the `else` branch of a graft — the "
@@ -360,7 +438,8 @@ VERDICT = {
     "patch-added-ungated": "a line the patch added outside any dispatch "
                            "guard (a renamed/cloned function body, or an "
                            "unconditional layout change)",
-    "patched-file": "the file is patched, the crash line is not",
+    "graft-hunk-context": "an unchanged line inside a hunk the patch touches "
+                          "— next to a graft, not part of one",
     "candidate-file": "same file as a causally required bug's recorded site, "
                       "different line; the patch does not touch that file",
     "unpatched": "the transplant does not touch this file at all",
