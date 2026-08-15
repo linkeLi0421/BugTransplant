@@ -496,32 +496,6 @@ def main():
         for v, k in vc.most_common():
             M.append(f"| `{v}` | {k} | {vcl[v]} | {VERDICT[v]} |")
         M.append("\n" + PATCH_NOTE + "\n")
-        M.append("## By fault site\n")
-        M.append("The same fault reached under different bug sets is one site, "
-                 "many kinds; libredwg in particular reaches a handful of "
-                 "sites under dozens of masks. Read this table, not the kind "
-                 "count.\n")
-        M.append("| target | crash site | kinds | classes | crashes | "
-                 "identified as | also reached without composition |")
-        M.append("|---|---|--:|--:|--:|---|---|")
-        bysite = defaultdict(lambda: {"k": 0, "c": 0, "cr": 0, "b": set(),
-                                      "i": set()})
-        for r in rows:
-            s = bysite[(r["benchmark"], r["top_function"], r["top_file"],
-                        r["top_line"])]
-            s["k"] += 1
-            s["c"] += r["classes"]
-            s["cr"] += r["crashes"]
-            s["i"].add(r["identified"])
-            s["b"].update(b for b in r["identified_bug"].split("|") if b)
-        for key, s in sorted(bysite.items(), key=lambda kv: -kv[1]["c"]):
-            o = site_l1[key]
-            alt = o["graft-triggered"] + o["graft-independent"]
-            M.append(f"| {key[0]} | `{key[1] or '?'}` "
-                     f"{(key[2] or '?').split('/')[-1]}:{key[3] or '?'} | "
-                     f"{s['k']} | {s['c']} | {s['cr']} | "
-                     f"{'/'.join(sorted(s['b'])) or '—'} | "
-                     f"{'yes, ' + str(alt) + ' classes' if alt else '**no**'} |")
         M.append("\n## Every kind\n")
         M.append("| target | classes | crashes | identified as | crash site | "
                  "grafts that must be on | where in the patch | fuzzers |")
