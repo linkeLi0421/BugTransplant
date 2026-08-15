@@ -267,6 +267,11 @@ def main():
     kinds = defaultdict(lambda: defaultdict(lambda: {
         "classes": 0, "crashes": 0, "fuzzers": set(), "examples": [],
         "sanitizers": Counter(), "masks": set()}))
+    # Every fault site in the campaign, by level-1 verdict.  Needed to ask
+    # whether a composition-dependent site is EVER reached without
+    # composition -- if single grafts reach it too, composition did not create
+    # it.
+    site_l1 = defaultdict(Counter)
     for n in sorted(BENCH):
         f = Path(a.data) / f"{n}_classes.csv"
         if not f.is_file():
@@ -275,6 +280,7 @@ def main():
             if r["contaminated"] == "True":
                 continue
             l1, mm, l2 = r["level1"], r["matched_bug"], r["level2"]
+            site_l1[(n, r["top_function"], r["top_file"], r["top_line"])][l1] += 1
             if l1 == "graft-triggered" and not mm:
                 p = "graft_triggered_unmatched"
             elif l1 == "graft-independent" and not mm:
@@ -342,8 +348,20 @@ def main():
                 if v.get("crash_line") and suffix(fi, str(v.get("crash_file"))):
                     d = abs(int(li or 0) - int(v["crash_line"])) if li else ""
                     dist = d if dist == "" else min(dist, d)
+            # Is this a bug we already know about?  Three ways to say yes,
+            # strongest first; the crash site's relation to the patch is a
+            # separate question and does not settle identity.
+            if ml and set(ml) & set(cl):
+                ident, ibug = "matches a bug it needs", sorted(set(ml) & set(cl))
+            elif resolved:
+                ident, ibug = "inside the graft of a bug it needs", resolved
+            elif ml:
+                ident, ibug = "matches a bug it does not need", ml
+            else:
+                ident, ibug = "not a catalogued bug", []
             rows.append({
                 "benchmark": n, "verdict": verdict,
+                "identified": ident, "identified_bug": "|".join(ibug),
                 "classes": k["classes"], "crashes": k["crashes"],
                 "top_function": fn, "top_file": fi, "top_line": li,
                 "candidates": cands, "matched_bug": mm,
@@ -381,6 +399,71 @@ def main():
                  "classes but one question, and the same site reached with "
                  "different bug sets is listed once per set. Full data: `"
                  + p + ".csv`.\n")
+        # Which catalogued bug is this?  Asked first, because it is the
+        # question; where the crash sits in the patch is evidence for it.
+        M.append("## Is it a bug we already know about?\n")
+        M.append("| | kinds | classes | |")
+        M.append("|---|--:|--:|---|")
+        idc, idcl = Counter(), Counter()
+        for r in rows:
+            idc[r["identified"]] += 1
+            idcl[r["identified"]] += r["classes"]
+        allbugs = {b for r in rows for b in r["identified_bug"].split("|") if b}
+        for k in ("matches a bug it needs", "inside the graft of a bug it needs",
+                  "matches a bug it does not need", "not a catalogued bug"):
+            if not idc[k]:
+                continue
+            M.append(f"| {k} | {idc[k]} | {idcl[k]} | "
+                     f"{100*idcl[k]/sum(idcl.values()):.0f}% |")
+        known = sum(idcl.values()) - idcl["not a catalogued bug"]
+        M.append(f"| **catalogued bug identified** | | **{known}** | "
+                 f"**{100*known/sum(idcl.values()):.0f}%** |")
+        M.append(f"\n{len(allbugs)} distinct catalogued bugs are named. "
+                 "*Matches a bug it needs* is both signals agreeing: the crash "
+                 "requires that bug's dispatch bit and faults at the site its "
+                 "reference crash records. *Matches a bug it does not need* is "
+                 "unmasking in the other direction — the required grafts made "
+                 "a different catalogued bug reachable.\n")
+        if idc["not a catalogued bug"]:
+            M.append("### The ones that are not\n")
+            for r in rows:
+                if r["identified"] != "not a catalogued bug":
+                    continue
+                key = (r["benchmark"], r["top_function"], r["top_file"],
+                       r["top_line"])
+                o = site_l1[key]
+                alt = o["graft-triggered"] + o["graft-independent"]
+                M.append(f"- **{r['benchmark']}** `{r['top_function']}` "
+                         f"{(r['top_file'] or '?').split('/')[-1]}:"
+                         f"{r['top_line'] or '?'} — {r['classes']} class(es), "
+                         f"{r['crashes']} crash(es), {r['sanitizer']}. Needs "
+                         f"{len(r['candidates'].split('|'))} bits. "
+                         + (f"The same fault site is reached by {alt} classes "
+                            "that need no composition at all, so the site is "
+                            "not new." if alt else
+                            "**No other class reaches this site.**")
+                         + f" `{r['example_testcase']}`")
+            M.append("")
+        cdsites = {(r["benchmark"], r["top_function"], r["top_file"],
+                    r["top_line"]) for r in rows}
+        uniq = [s for s in cdsites
+                if not (site_l1[s]["graft-triggered"]
+                        + site_l1[s]["graft-independent"])]
+        M.append(f"**{len(cdsites)-len(uniq)} of the {len(cdsites)} distinct "
+                 "fault sites are also reached without composition** — by a "
+                 "single graft or by no graft at all. A site that only a "
+                 "multi-bit mask can reach is the shape a composition-created "
+                 "fault would have.\n")
+        for s in uniq:
+            b = {r["identified_bug"] for r in rows
+                 if (r["benchmark"], r["top_function"], r["top_file"],
+                     r["top_line"]) == s and r["identified_bug"]}
+            M.append(f"- Only under composition: **{s[0]}** `{s[1]}` "
+                     f"{(s[2] or '?').split('/')[-1]}:{s[3] or '?'}"
+                     + (f" — but it is {'/'.join(sorted(b))}'s own recorded "
+                        "crash site, reached only once another graft is on."
+                        if b else " — no catalogued bug."))
+        M.append("")
         rc = sum(r["classes"] for r in rows if r["resolved_bug"])
         if rc:
             rb = {b for r in rows if r["resolved_bug"]
@@ -402,18 +485,46 @@ def main():
         for v, k in vc.most_common():
             M.append(f"| `{v}` | {k} | {vcl[v]} | {VERDICT[v]} |")
         M.append("\n" + PATCH_NOTE + "\n")
-        M.append("## Every kind\n")
-        M.append("| target | classes | crashes | verdict | crash site | "
-                 "needs bits of | matches | fuzzers |")
+        M.append("## By fault site\n")
+        M.append("The same fault reached under different bug sets is one site, "
+                 "many kinds; libredwg in particular reaches a handful of "
+                 "sites under dozens of masks. Read this table, not the kind "
+                 "count.\n")
+        M.append("| target | crash site | kinds | classes | crashes | "
+                 "identified as | also reached without composition |")
+        M.append("|---|---|--:|--:|--:|---|---|")
+        bysite = defaultdict(lambda: {"k": 0, "c": 0, "cr": 0, "b": set(),
+                                      "i": set()})
+        for r in rows:
+            s = bysite[(r["benchmark"], r["top_function"], r["top_file"],
+                        r["top_line"])]
+            s["k"] += 1
+            s["c"] += r["classes"]
+            s["cr"] += r["crashes"]
+            s["i"].add(r["identified"])
+            s["b"].update(b for b in r["identified_bug"].split("|") if b)
+        for key, s in sorted(bysite.items(), key=lambda kv: -kv[1]["c"]):
+            o = site_l1[key]
+            alt = o["graft-triggered"] + o["graft-independent"]
+            M.append(f"| {key[0]} | `{key[1] or '?'}` "
+                     f"{(key[2] or '?').split('/')[-1]}:{key[3] or '?'} | "
+                     f"{s['k']} | {s['c']} | {s['cr']} | "
+                     f"{'/'.join(sorted(s['b'])) or '—'} | "
+                     f"{'yes, ' + str(alt) + ' classes' if alt else '**no**'} |")
+        M.append("\n## Every kind\n")
+        M.append("| target | classes | crashes | identified as | crash site | "
+                 "needs bits of | where in the patch | fuzzers |")
         M.append("|---|--:|--:|---|---|---|---|--:|")
         for r in rows:
             site = (f"`{r['top_function'] or '?'}` "
                     f"{(r['top_file'] or '?').split('/')[-1]}:"
                     f"{r['top_line'] or '?'}")
+            nb = len([b for b in r["candidates"].split("|") if b])
+            cand = (r["candidates"].replace("|", " ") if nb <= 4
+                    else f"{nb} bugs")
             M.append(f"| {r['benchmark']} | {r['classes']} | {r['crashes']} | "
-                     f"{r['verdict']} | {site} | "
-                     f"{r['candidates'].replace('|', ' ') or '—'} | "
-                     f"{r['matched_bug'].replace('|', ' ') or '—'} | "
+                     f"{r['identified_bug'].replace('|', ' ') or '—'} | {site} | "
+                     f"{cand or '—'} | {r['verdict']} | "
                      f"{len(r['fuzzers'].split('|'))} |")
         (out / f"{p}.md").write_text("\n".join(M) + "\n")
     return SUMMARY, out
