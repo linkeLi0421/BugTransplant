@@ -357,10 +357,7 @@ def main():
     P("\n`by bit` = a crash provably needs that bug's dispatch bit (level 1). "
       "`by signature` = a crash faults at that bug's recorded site (level 2). "
       "The two overlap; `seen` is their union.")
-    with open(outdir / "bug_attribution.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(bugrows[0]))
-        w.writeheader()
-        w.writerows(bugrows)
+    BUGROWS = bugrows
 
     # ---------------------------------------------------------------- table 4
     P("\n## 4. Composition-dependent crashes\n")
@@ -443,6 +440,7 @@ def main():
     tft = defaultdict(lambda: defaultdict(set))     # (target, fuzzer, trial)
     trials_seen = defaultdict(set)                  # (target, fuzzer) -> trials
     seen_any = defaultdict(set)
+    bug_fz = defaultdict(set)                       # (target, bug) -> fuzzers
     for n, rows in sorted(clean.items()):
         idx = Path(a.data) / f"{n}_crash_index.csv"
         if not idx.is_file():
@@ -460,10 +458,12 @@ def main():
                 tf[(n, r["fuzzer"])]["gated"].add(b)
                 tft[(n, r["fuzzer"], r["trial"])]["gated"].add(b)
                 seen_any["gated"].add((n, b))
+                bug_fz[(n, b)].add(r["fuzzer"])
             for b in bysig - gated:
                 tf[(n, r["fuzzer"])]["ungated"].add(b)
                 tft[(n, r["fuzzer"], r["trial"])]["ungated"].add(b)
                 seen_any["ungated"].add((n, b))
+                bug_fz[(n, b)].add(r["fuzzer"])
     FZ = sorted({f for _, f in trials_seen})
     # A campaign that archived no crash at all leaves no row in the index, and
     # a 0 there means "no data", not "found nothing".  c-blosc2 x libafl is the
@@ -529,6 +529,45 @@ def main():
       "above is how much of a fuzzer's score comes from repetition rather than "
       "from a single run.")
 
+    P("\n### Detection rate: share of the target's catalogue each fuzzer "
+      "surfaces\n")
+    det = []
+    for kind in ("gated", "ungated"):
+        P(f"\n**{kind} bugs**\n")
+        P("| target | pool | " + " | ".join(FZ) + " | union |")
+        P("|---|--:|" + "--:|" * (len(FZ) + 1))
+        for n in sorted(clean):
+            gset = {b for b, v in META[n].items() if v.get("dispatch_value")}
+            pool = len(gset) if kind == "gated" else len(META[n]) - len(gset)
+            cells, uni = [], set()
+            for f in FZ:
+                got = tf[(n, f)][kind]
+                uni |= got
+                cells.append("n/a" if not trials_seen[(n, f)] else
+                             (f"{100*len(got)/pool:.0f}%" if pool else "—"))
+                det.append({
+                    "benchmark": n, "fuzzer": f, "gating": kind,
+                    "found": len(got), "pool": pool,
+                    "pct": f"{100*len(got)/pool:.1f}" if pool else "",
+                    "trials_with_crashes": len(trials_seen[(n, f)]),
+                })
+            P(f"| {n} | {pool} | " + " | ".join(cells) + " | "
+              + (f"{100*len(uni)/pool:.0f}%" if pool else "—") + " |")
+        tot_pool = sum(sum(1 for v in META[n].values()
+                           if bool(v.get("dispatch_value")) == (kind == "gated"))
+                       for n in clean)
+        tot = [sum(len(tf[(n, f)][kind]) for n in clean) for f in FZ]
+        P(f"| **suite** | **{tot_pool}** | "
+          + " | ".join(f"**{100*c/tot_pool:.0f}%**" for c in tot)
+          + f" | **{100*len(seen_any[kind])/tot_pool:.0f}%** |")
+    with open(outdir / "per_fuzzer_detection.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(det[0]))
+        w.writeheader()
+        w.writerows(det)
+    P("\nA percentage is of that target's own pool, so it is comparable across "
+      "fuzzers but not across targets. `n/a` marks a fuzzer that archived no "
+      "crash on that target at all.")
+
     with open(outdir / "per_fuzzer_bugs.csv", "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["benchmark", "fuzzer", "trial", "bug_id", "gating",
@@ -593,6 +632,15 @@ def main():
             PT.append("\nComposition-dependent: none.")
         PT.append("")
     (outdir / "PER_TARGET.md").write_text("\n".join(PT) + "\n")
+
+    for r in BUGROWS:
+        fz = sorted(bug_fz.get((r["benchmark"], r["bug_id"]), ()))
+        r["found_by"] = "|".join(fz)
+        r["n_fuzzers"] = len(fz)
+    with open(outdir / "bug_attribution.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(BUGROWS[0]))
+        w.writeheader()
+        w.writerows(BUGROWS)
 
     (outdir / "FULL_RESULTS.md").write_text(
         "# Two-level attribution: full results\n\n"
