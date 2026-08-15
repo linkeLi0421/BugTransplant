@@ -486,20 +486,14 @@ def main():
                             "recorded crash site, reached only once another "
                             "graft is on." if b else " — no catalogued bug."))
             M.append("")
-        M.append("## Where the crash site sits relative to the transplant\n")
-        M.append("| verdict | kinds | classes | meaning |")
-        M.append("|---|--:|--:|---|")
-        vc = Counter(r["verdict"] for r in rows)
-        vcl = Counter()
-        for r in rows:
-            vcl[r["verdict"]] += r["classes"]
-        for v, k in vc.most_common():
-            M.append(f"| `{v}` | {k} | {vcl[v]} | {VERDICT[v]} |")
-        M.append("\n" + PATCH_NOTE + "\n")
         M.append("\n## Every kind\n")
+        M.append("Where each crash site sits in `combined.diff` — inside a "
+                 "graft, in its `else` branch, in untouched code — is in the "
+                 "CSV's `verdict` column, with the bug it resolves to in "
+                 "`resolved_bug`.\n")
         M.append("| target | classes | crashes | identified as | crash site | "
-                 "grafts that must be on | where in the patch | fuzzers |")
-        M.append("|---|--:|--:|---|---|---|---|--:|")
+                 "grafts that must be on | fuzzers |")
+        M.append("|---|--:|--:|---|---|---|--:|")
         for r in rows:
             site = (f"`{r['top_function'] or '?'}` "
                     f"{(r['top_file'] or '?').split('/')[-1]}:"
@@ -509,8 +503,7 @@ def main():
                     else f"{nb} bugs")
             M.append(f"| {r['benchmark']} | {r['classes']} | {r['crashes']} | "
                      f"{r['identified_bug'].replace('|', ' ') or '—'} | {site} | "
-                     f"{cand or '—'} | {r['verdict']} | "
-                     f"{len(r['fuzzers'].split('|'))} |")
+                     f"{cand or '—'} | {len(r['fuzzers'].split('|'))} |")
         (out / f"{p}.md").write_text("\n".join(M) + "\n")
     return SUMMARY, out
 
