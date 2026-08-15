@@ -252,9 +252,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     POPS = {
-        "graft_triggered_unmatched": [],
-        "native_unmatched": [],
-        "graft_triggered_other_bug": [],
+        "graft_triggered": [],
+        "graft_independent": [],
         "composition_dependent": [],
     }
     META, PATCH, OWNER = {}, {}, {}
@@ -279,17 +278,18 @@ def main():
         for r in csv.DictReader(open(f)):
             if r["contaminated"] == "True":
                 continue
-            l1, mm, l2 = r["level1"], r["matched_bug"], r["level2"]
+            l1, mm = r["level1"], r["matched_bug"]
             site_l1[(n, r["top_function"], r["top_file"], r["top_line"])][l1] += 1
-            if l1 == "graft-triggered" and not mm:
-                p = "graft_triggered_unmatched"
-            elif l1 == "graft-independent" and not mm:
-                p = "native_unmatched"
-            elif l1 == "graft-triggered" and l2 == "match-other-bug":
-                p = "graft_triggered_other_bug"
-            elif l1 == "composition-dependent":
-                p = "composition_dependent"
-            else:
+            # One report per level-1 verdict.  Splitting further by the level-2
+            # outcome (matched / matched-something-else / no match) predates the
+            # three-way identification below and cuts across it: it put the
+            # 7,106 graft-triggered classes that match their own bug in no
+            # report at all, and split "matches only a bug whose bit is off"
+            # across two.
+            p = {"graft-triggered": "graft_triggered",
+                 "graft-independent": "graft_independent",
+                 "composition-dependent": "composition_dependent"}.get(l1)
+            if not p:
                 continue
             key = (n, r["top_function"], r["top_file"], r["top_line"],
                    r["candidates"], mm)
@@ -544,27 +544,18 @@ PATCH_NOTE = (
     "over the diff, which is exact for the `if/else` form every graft uses "
     "and approximate for macro-heavy code.")
 HEAD = {
-    "graft_triggered_unmatched": (
-        "Graft-triggered crashes that match no catalogued bug",
-        "Level 1 proves these need exactly one graft switched on — clear its bit "
-        "and the "
-        "crash goes away, set it alone and it returns. Level 2 finds no "
-        "catalogued bug at that crash site. This is the gap between causal "
-        "and semantic attribution: the bit says which graft a crash requires, "
-        "not which historical bug it is."),
-    "native_unmatched": (
-        "Graft-independent crashes that match no catalogued bug",
+    "graft_triggered": (
+        "Graft-triggered crashes",
+        "Exactly one graft has to be switched on for these: clear every bit and "
+        "the crash goes away, set that one alone and it returns. Level 1 names "
+        "the graft with certainty. What it does not settle is which historical "
+        "bug the crash *is* — that is what the split below measures."),
+    "graft_independent": (
+        "Graft-independent crashes",
         "These reproduce with every graft switched off, so no transplant is "
-        "involved, and they fault where no catalogued bug is recorded. They "
-        "are the target's own uncatalogued bugs — the largest unattributed "
-        "population in the analysis."),
-    "graft_triggered_other_bug": (
-        "Graft-triggered crashes whose site belongs to a different bug",
-        "The crash only reproduces with graft A switched on, but faults at bug "
-        "B's recorded "
-        "site. Where B is gated and its bit is off, the match is already "
-        "vetoed by level 1 and never reaches this file; what remains is "
-        "mostly B ungated — unmasking, where A makes B reachable."),
+        "involved in causing them. Only ungated bugs — always active, with no "
+        "bit to clear — can be on for such a crash, so level 2 carries the "
+        "whole attribution here."),
     "composition_dependent": (
         "Composition-dependent crashes",
         "No single dispatch bit reproduces these; two or more grafts must be "
