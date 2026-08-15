@@ -243,6 +243,164 @@ def locate(patch, path, line):
     return "", set(), False, set()
 
 
+def build_row(n, fn, fi, li, cands, mm, k, META, PATCH, OWNER):
+    """One kind -> one output row: where it crashes, and which bug that is."""
+    cl = [b for b in cands.split("|") if b]
+    ml = [b for b in mm.split("|") if b]
+    state, payload, in_hunk, hbits = locate(PATCH[n], fi, li)
+    cand_vals = {META[n][b].get("dispatch_value") for b in cl if b in META[n]}
+    abits = payload if isinstance(payload, set) else set()
+    owners = sorted(OWNER[n].get(v, f"unowned:{v}") for v in (abits or hbits))
+    resolved = []
+    if state == "clone-graft":
+        owners = [payload]
+        if payload in cl:
+            verdict, resolved = "graft-clone", [payload]
+        else:
+            verdict = "graft-clone-other"
+    elif state == "clone-original":
+        owners, verdict = [], "graft-clone-original"
+    elif state == "graft" and (abits & cand_vals):
+        verdict = "graft-code"
+        resolved = sorted(b for b in cl
+                          if META[n].get(b, {}).get("dispatch_value") in abits)
+    elif state == "graft":
+        verdict = "graft-code-other"
+    elif state == "original":
+        verdict = "graft-else-original"
+    elif state == "plain":
+        verdict = "patch-added-ungated"
+    elif in_hunk:
+        verdict = "graft-hunk-context"
+    elif any(suffix(fi, str(META[n][b].get("crash_file") or ""))
+             for b in cl if b in META[n]):
+        verdict = "candidate-file"
+    else:
+        verdict = "unpatched"
+    dist = ""
+    for b in cl:
+        v = META[n].get(b, {})
+        if v.get("crash_line") and suffix(fi, str(v.get("crash_file"))):
+            d = abs(int(li or 0) - int(v["crash_line"])) if li else ""
+            dist = d if dist == "" else min(dist, d)
+    # A bug is "on" for this crash if its bit is in the set that reproduces it,
+    # or if it is ungated and therefore always active.
+    gated_n = {b for b, v in META[n].items() if v.get("dispatch_value")}
+    on_gated = sorted(b for b in ml if b in gated_n and b in cl)
+    on_ungated = sorted(b for b in ml if b not in gated_n)
+    off_only = sorted(k["vetoed"]) if not ml else []
+    if on_gated:
+        ident, ibug = ON_GATED, on_gated
+    elif on_ungated:
+        ident, ibug = ON_UNGATED, on_ungated
+    elif ml or off_only:
+        ident, ibug = OFF_ONLY, (ml or off_only)
+    else:
+        ident, ibug = NOTHING, []
+    return {
+        "benchmark": n, "verdict": verdict,
+        "identified": ident, "identified_bug": "|".join(ibug),
+        "also_matches_a_bit_off_bug": "|".join(sorted(k["vetoed"])),
+        "classes": k["classes"], "crashes": k["crashes"],
+        "top_function": fn, "top_file": fi, "top_line": li,
+        "candidates": cands, "matched_bug": mm,
+        "matched_gating": "|".join(
+            "gated" if META[n].get(b, {}).get("dispatch_value") else "ungated"
+            for b in ml),
+        "patch_owners_at_site": "|".join(owners),
+        "resolved_bug": "|".join(resolved),
+        "lines_from_candidate_site": dist,
+        "sanitizer": k["sanitizers"].most_common(1)[0][0],
+        "fuzzers": "|".join(sorted(k["fuzzers"])),
+        "distinct_masks": len(k["masks"]),
+        "example_testcase": k["examples"][0] if k["examples"] else "",
+    }
+
+
+ON_GATED = "matches a bug that is on (gated, bit set)"
+ON_UNGATED = "matches a bug that is on (ungated, always active)"
+OFF_ONLY = "matches only a bug whose bit is off"
+NOTHING = "matches nothing"
+
+
+def section(p, rows, site_l1):
+    """One verdict's section of the report."""
+    M = [f"\n## {HEAD[p][0]}\n", HEAD[p][1], ""]
+    nsite = len({(r["benchmark"], r["top_function"], r["top_file"],
+                  r["top_line"]) for r in rows})
+    NC = sum(r["classes"] for r in rows)
+    NX = sum(r["crashes"] for r in rows)
+    M.append(f"**{NC} classes / {NX} crashes / {len(rows)} kinds / "
+             f"{nsite} distinct crash sites.** Per-kind data: `{p}.csv`.\n")
+    kc, cc, xc = Counter(), Counter(), Counter()
+    for r in rows:
+        kc[r["identified"]] += 1
+        cc[r["identified"]] += r["classes"]
+        xc[r["identified"]] += r["crashes"]
+    allbugs = {b for r in rows for b in r["identified_bug"].split("|") if b}
+    M.append("| | kinds | classes | crashes | |")
+    M.append("|---|--:|--:|--:|---|")
+    on_c = cc[ON_GATED] + cc[ON_UNGATED]
+    on_x = xc[ON_GATED] + xc[ON_UNGATED]
+    if on_c:
+        M.append(f"| **(1) matches a bug that is on** | | **{on_c}** | "
+                 f"**{on_x}** | **{100*on_c/NC:.0f}%** |")
+    for k in (ON_GATED, ON_UNGATED):
+        if kc[k]:
+            M.append(f"| &nbsp;&nbsp;· {k.split('(')[1].rstrip(')')} | "
+                     f"{kc[k]} | {cc[k]} | {xc[k]} | {100*cc[k]/NC:.0f}% |")
+    for lbl, k in (("(2) matches some other bug — its bit was off", OFF_ONLY),
+                   ("(3) matches nothing", NOTHING)):
+        M.append(f"| **{lbl}** | {kc[k]} | **{cc[k]}** | **{xc[k]}** | "
+                 f"**{100*cc[k]/NC:.0f}%** |")
+    M.append(f"\n{len(allbugs)} distinct catalogued bugs are named.")
+    off = sum(r["classes"] for r in rows
+              if r["also_matches_a_bit_off_bug"]
+              and r["identified"].startswith("matches a bug that is on"))
+    if off:
+        M.append(f"\n{off} classes in category 1 **also** match a gated bug "
+                 "whose bit was off — the counterfactual rules that match out, "
+                 "and without it they would be credited to a bug whose code "
+                 "never ran.")
+    rr = sum(r["classes"] for r in rows
+             if r["identified"] == NOTHING and r["resolved_bug"])
+    if rr:
+        rb = {b for r in rows if r["identified"] == NOTHING
+              for b in r["resolved_bug"].split("|") if b}
+        M.append(f"\n**{rr} of the category-3 classes are identifiable "
+                 f"anyway**: they fault inside the grafted code of a bug that "
+                 f"is on ({len(rb)} distinct), a few lines from where that "
+                 "bug's reference crash was recorded, so the signature misses "
+                 f"on the line and not on the identity. That leaves "
+                 f"{cc[NOTHING]-rr} classes with no account at all.")
+    unp = sum(r["classes"] for r in rows if r["verdict"] == "unpatched")
+    if unp:
+        M.append(f"\n{unp} class{'es' if unp > 1 else ''} crash"
+                 f"{'' if unp > 1 else 'es'} in files the transplant never "
+                 "touches at all.")
+    if p == "composition_dependent":
+        sites = {(r["benchmark"], r["top_function"], r["top_file"],
+                  r["top_line"]) for r in rows}
+        uniq = [s for s in sites if not (site_l1[s]["graft-triggered"]
+                                         + site_l1[s]["graft-independent"])]
+        M.append(f"\n**{len(sites)-len(uniq)} of the {len(sites)} distinct "
+                 "fault sites are also reached without composition** — by a "
+                 "single graft, or by none. A site only a multi-bit mask can "
+                 "reach is the shape a composition-created fault would have.")
+        for s_ in uniq:
+            b = {r["identified_bug"] for r in rows
+                 if (r["benchmark"], r["top_function"], r["top_file"],
+                     r["top_line"]) == s_ and r["identified_bug"]}
+            M.append(f"\n- Only under composition: **{s_[0]}** `{s_[1]}` "
+                     f"{(s_[2] or '?').split('/')[-1]}:{s_[3] or '?'}"
+                     + (f" — but it is {'/'.join(sorted(b))}'s own recorded "
+                        "crash site, reached only once another graft is on."
+                        if b else " — no catalogued bug."))
+    M.append("")
+    return M
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
@@ -304,208 +462,67 @@ def main():
             if len(k["examples"]) < 3:
                 k["examples"].append(r["testcase"])
 
-    SUMMARY = []
-    for p, ks in kinds.items():
+    ORDER = ["graft_triggered", "graft_independent", "composition_dependent"]
+    ROWS = {}
+    for p in ORDER:
         rows = []
-        for (n, fn, fi, li, cands, mm), k in ks.items():
-            cl = [b for b in cands.split("|") if b]
-            ml = [b for b in mm.split("|") if b]
-            state, payload, in_hunk, hbits = locate(PATCH[n], fi, li)
-            cand_vals = {META[n][b].get("dispatch_value") for b in cl
-                         if b in META[n]}
-            abits = payload if isinstance(payload, set) else set()
-            owners = sorted(OWNER[n].get(v, f"unowned:{v}")
-                            for v in (abits or hbits))
-            resolved = []
-            if state == "clone-graft":
-                owners = [payload]
-                if payload in cl:
-                    verdict, resolved = "graft-clone", [payload]
-                else:
-                    verdict = "graft-clone-other"
-            elif state == "clone-original":
-                owners, verdict = [], "graft-clone-original"
-            elif state == "graft" and (abits & cand_vals):
-                verdict = "graft-code"
-                resolved = sorted(b for b in cl
-                                  if META[n].get(b, {}).get("dispatch_value")
-                                  in abits)
-            elif state == "graft":
-                verdict = "graft-code-other"
-            elif state == "original":
-                verdict = "graft-else-original"
-            elif state == "plain":
-                verdict = "patch-added-ungated"
-            elif in_hunk:
-                verdict = "graft-hunk-context"
-            elif any(suffix(fi, str(META[n][b].get("crash_file") or ""))
-                     for b in cl if b in META[n]):
-                verdict = "candidate-file"
-            else:
-                verdict = "unpatched"
-            # distance to the nearest candidate's recorded site in this file
-            dist = ""
-            for b in cl:
-                v = META[n].get(b, {})
-                if v.get("crash_line") and suffix(fi, str(v.get("crash_file"))):
-                    d = abs(int(li or 0) - int(v["crash_line"])) if li else ""
-                    dist = d if dist == "" else min(dist, d)
-            # Is this a bug we already know about?  A crash reproduces under
-            # some set of grafts being ON; a bug is "on" for it if its bit is
-            # in that set, or if it is ungated and therefore always on.  Ask
-            # which of those the crash signature lands on.
-            gated_n = {b for b, v in META[n].items() if v.get("dispatch_value")}
-            on_gated = sorted(b for b in ml if b in gated_n and b in cl)
-            on_ungated = sorted(b for b in ml if b not in gated_n)
-            off_only = sorted(k["vetoed"]) if not ml else []
-            if on_gated:
-                ident, ibug = "matches a bug that is on (gated, bit set)", on_gated
-            elif on_ungated:
-                ident, ibug = ("matches a bug that is on (ungated, always active)",
-                               on_ungated)
-            elif ml or off_only:
-                ident, ibug = ("matches only a bug whose bit is off",
-                               ml or off_only)
-            else:
-                ident, ibug = "matches nothing", []
-            rows.append({
-                "benchmark": n, "verdict": verdict,
-                "identified": ident, "identified_bug": "|".join(ibug),
-                "also_matches_a_bit_off_bug": "|".join(sorted(k["vetoed"])),
-                "classes": k["classes"], "crashes": k["crashes"],
-                "top_function": fn, "top_file": fi, "top_line": li,
-                "candidates": cands, "matched_bug": mm,
-                "matched_gating": "|".join(
-                    "gated" if META[n].get(b, {}).get("dispatch_value")
-                    else "ungated" for b in ml),
-                "patch_owners_at_site": "|".join(owners),
-                "resolved_bug": "|".join(resolved),
-                "lines_from_candidate_site": dist,
-                "sanitizer": k["sanitizers"].most_common(1)[0][0],
-                "fuzzers": "|".join(sorted(k["fuzzers"])),
-                "distinct_masks": len(k["masks"]),
-                "example_testcase": k["examples"][0] if k["examples"] else "",
-            })
+        for (n, fn, fi, li, cands, mm), k in kinds[p].items():
+            rows.append(build_row(n, fn, fi, li, cands, mm, k, META, PATCH,
+                                  OWNER))
         rows.sort(key=lambda r: (-r["classes"], r["benchmark"]))
         with open(out / f"{p}.csv", "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
             w.writeheader()
             w.writerows(rows)
-        SUMMARY.append((p, rows))
-        print(f"{p:30s} {sum(r['classes'] for r in rows):6d} classes  "
-              f"{len(rows):4d} kinds  " +
-              " ".join(f"{k}={v}" for k, v in
-                       Counter(r["verdict"] for r in rows).most_common()))
+        ROWS[p] = rows
+        print(f"{p:24s} {sum(r['classes'] for r in rows):6d} classes  "
+              f"{sum(r['crashes'] for r in rows):7d} crashes  "
+              f"{len(rows):4d} kinds")
 
-        # ------------------------------------------------------------ report
-        M = [f"# {HEAD[p][0]}\n", HEAD[p][1], ""]
-        nsite = len({(r["benchmark"], r["top_function"], r["top_file"],
-                      r["top_line"]) for r in rows})
-        M.append(f"**{sum(r['classes'] for r in rows)} classes / "
-                 f"{sum(r['crashes'] for r in rows)} crashes, "
-                 f"{len(rows)} kinds, {nsite} distinct crash sites.** A *kind* "
-                 "is one (target, crash site, the grafts that must be on) — the "
-                 "same fault reached under different dispatch masks forms many "
-                 "classes but one question, and the same site reached with "
-                 "different bug sets is listed once per set. Full data: `"
-                 + p + ".csv`.\n")
-        # Which catalogued bug is this?  Asked first, because it is the
-        # question; where the crash sits in the patch is evidence for it.
-        M.append("## Is it a bug we already know about?\n")
-        M.append("A crash reproduces under some set of grafts being **on** — "
-                 "level 1 establishes which. A catalogued bug counts as *on* "
-                 "for that crash if its dispatch bit is in that set, or if it "
-                 "is ungated and therefore always active. The question here is "
-                 "which of those the crash signature lands on.\n")
-        M.append("| | kinds | classes | |")
-        M.append("|---|--:|--:|---|")
-        idc, idcl = Counter(), Counter()
-        for r in rows:
-            idc[r["identified"]] += 1
-            idcl[r["identified"]] += r["classes"]
-        N = sum(idcl.values())
-        allbugs = {b for r in rows for b in r["identified_bug"].split("|") if b}
-        ON = ("matches a bug that is on (gated, bit set)",
-              "matches a bug that is on (ungated, always active)")
-        on_cl = sum(idcl[k] for k in ON)
-        if on_cl:
-            M.append(f"| **(1) matches a bug that is on** | | **{on_cl}** | "
-                     f"**{100*on_cl/N:.0f}%** |")
-        for k in ON:
-            if idc[k]:
-                M.append(f"| &nbsp;&nbsp;· {k.split('(')[1].rstrip(')')} | "
-                         f"{idc[k]} | {idcl[k]} | {100*idcl[k]/N:.0f}% |")
-        for lbl, k in (("(2) matches some other bug — its bit was off",
-                        "matches only a bug whose bit is off"),
-                       ("(3) matches nothing", "matches nothing")):
-            M.append(f"| **{lbl}** | {idc[k]} | **{idcl[k]}** | "
-                     f"**{100*idcl[k]/N:.0f}%** |")
-        M.append(f"\n{len(allbugs)} distinct catalogued bugs are named.")
-        off = sum(r["classes"] for r in rows
-                  if r["also_matches_a_bit_off_bug"]
-                  and r["identified"].startswith("matches a bug that is on"))
-        if off:
-            M.append(f"\n**Category 2 counts only classes where an off bug is "
-                     f"the *sole* match. A further {off} classes carry such a "
-                     "match alongside a valid one** — the crash signature also "
-                     "points at a gated bug whose code never ran, and level 1 "
-                     "rules it out. Column `also_matches_a_bit_off_bug`; "
-                     "without that veto these would be credited to a bug that "
-                     "was switched off.")
-        rr = sum(r["classes"] for r in rows
-                 if r["identified"] == "matches nothing" and r["resolved_bug"])
-        if rr:
-            rb = {b for r in rows if r["identified"] == "matches nothing"
-                  for b in r["resolved_bug"].split("|") if b}
-            M.append(f"\n**{rr} of the category-3 classes are identifiable "
-                     "anyway**: they fault *inside the grafted code* of a bug "
-                     f"that is on ({len(rb)} distinct), a few lines from where "
-                     "that bug's reference crash was recorded, so the "
-                     "signature misses on the line and not on the identity. "
-                     f"That leaves {idcl['matches nothing']-rr} classes with "
-                     "no account at all.")
-        M.append("")
-        if p == "composition_dependent":
-            cdsites = {(r["benchmark"], r["top_function"], r["top_file"],
-                        r["top_line"]) for r in rows}
-            uniq = [s for s in cdsites
-                    if not (site_l1[s]["graft-triggered"]
-                            + site_l1[s]["graft-independent"])]
-            M.append(f"\n**{len(cdsites)-len(uniq)} of the {len(cdsites)} "
-                     "distinct fault sites are also reached without "
-                     "composition** — by a single graft, or by none. A site "
-                     "only a multi-bit mask can reach is the shape a "
-                     "composition-created fault would have.\n")
-            for s_ in uniq:
-                b = {r["identified_bug"] for r in rows
-                     if (r["benchmark"], r["top_function"], r["top_file"],
-                         r["top_line"]) == s_ and r["identified_bug"]}
-                M.append(f"- Only under composition: **{s_[0]}** `{s_[1]}` "
-                         f"{(s_[2] or '?').split('/')[-1]}:{s_[3] or '?'}"
-                         + (f" — but it is {'/'.join(sorted(b))}'s own "
-                            "recorded crash site, reached only once another "
-                            "graft is on." if b else " — no catalogued bug."))
-            M.append("")
-        M.append("\n## Every kind\n")
-        M.append("Where each crash site sits in `combined.diff` — inside a "
-                 "graft, in its `else` branch, in untouched code — is in the "
-                 "CSV's `verdict` column, with the bug it resolves to in "
-                 "`resolved_bug`.\n")
-        M.append("| target | classes | crashes | identified as | crash site | "
-                 "grafts that must be on | fuzzers |")
-        M.append("|---|--:|--:|---|---|---|--:|")
-        for r in rows:
-            site = (f"`{r['top_function'] or '?'}` "
-                    f"{(r['top_file'] or '?').split('/')[-1]}:"
-                    f"{r['top_line'] or '?'}")
-            nb = len([b for b in r["candidates"].split("|") if b])
-            cand = (r["candidates"].replace("|", " ") if nb <= 4
-                    else f"{nb} bugs")
-            M.append(f"| {r['benchmark']} | {r['classes']} | {r['crashes']} | "
-                     f"{r['identified_bug'].replace('|', ' ') or '—'} | {site} | "
-                     f"{cand or '—'} | {len(r['fuzzers'].split('|'))} |")
-        (out / f"{p}.md").write_text("\n".join(M) + "\n")
-    return SUMMARY, out
+    M = ["# Crash attribution by verdict\n",
+         "Every crash class of the ten campaigns, sorted first by what the "
+         "dispatch-bit counterfactual proves (one section each) and then by "
+         "what the crash signature lands on. Generated by "
+         "`script/two_level_unattributed.py` (BugTransplant repo) from "
+         "`../<target>_classes.csv`; the per-kind data behind each section is "
+         "in `<section>.csv`.\n",
+         "## How to read the tables\n",
+         "A crash reproduces under some set of grafts being **on** — the "
+         "counterfactual replay establishes which. A catalogued bug is *on* "
+         "for that crash if its dispatch bit is in that set, or if it is "
+         "ungated and therefore always active. Each section sorts its classes "
+         "by what the crash signature lands on:\n",
+         "| | |",
+         "|---|---|",
+         "| **(1) matches a bug that is on** | gated with its bit set, or "
+         "ungated |",
+         "| **(2) matches some other bug** | a gated bug whose bit was off — "
+         "its code never ran, so the counterfactual rules the match out |",
+         "| **(3) matches nothing** | no catalogued bug at that crash site |",
+         "",
+         "A match is exact: the first frame that is program code must equal "
+         "the bug's recorded function, file and line. Category 2 counts "
+         "classes where an off bug is the *sole* match; each section also "
+         "gives how many carry one beside a valid match "
+         "(`also_matches_a_bit_off_bug`).\n",
+         "Part of category 3 is still identifiable from where the crash sits "
+         "in `combined.diff`: a crash inside the grafted code of a bug that is "
+         "on **is** that bug, whatever line its reference crash was recorded "
+         "at. Per-kind detail is in the CSVs (`verdict`, `resolved_bug`, "
+         "`patch_owners_at_site`).\n",
+         "A **kind** groups classes by (target, crash site, the grafts that "
+         "must be on, matched bug); a **class** is the replay unit, one per "
+         "(crash signature, dispatch mask). Only `graft_triggered` is a "
+         "minimal result — one graft alone reproduces the crash. No subset "
+         "search runs, so under `composition_dependent` the grafts listed are "
+         "every bug whose bit was set in the mask the fuzzer recorded: an "
+         "upper bound on what is involved, not a minimal set.\n"]
+    for p in ORDER:
+        M += section(p, ROWS[p], site_l1)
+    (out / "README.md").write_text("\n".join(M) + "\n")
+    print(f"\nwrote {out}/README.md")
+    return ROWS, out
+
 
 
 VERDICT = {
