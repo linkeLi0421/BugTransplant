@@ -9,14 +9,14 @@ a few hundred kinds, which is small enough to read one by one.
   1 graft-triggered, no catalogued bug matches   -> the causal/semantic gap
   2 graft-independent, no catalogued bug matches -> uncatalogued native bugs
   3 graft-triggered, matches a DIFFERENT bug     -> unmasking, or a bad credit
-  4 composition-dependent                        -> needs >=2 grafts together
+  4 composition-dependent                        -> requires >=2 grafts at once
 
 The discriminating evidence is whether the crash site is code the transplant
 patch wrote.  For each kind we locate the top project frame in
 `patches/combined.diff`:
 
   graft-code        the crash line is a line the patch ADDED, inside a block
-                    gated by one of the bugs the crash causally needs.  A
+                    gated by one of the bugs whose bit the crash requires.  A
                     crash here is inside the graft itself -- the strongest
                     signal that the transplant, not the target, is at fault.
   graft-code-other  an added line, but gated by some other bug (or ungated
@@ -352,11 +352,11 @@ def main():
             # strongest first; the crash site's relation to the patch is a
             # separate question and does not settle identity.
             if ml and set(ml) & set(cl):
-                ident, ibug = "matches a bug it needs", sorted(set(ml) & set(cl))
+                ident, ibug = "matches a required bug's site", sorted(set(ml) & set(cl))
             elif resolved:
-                ident, ibug = "inside the graft of a bug it needs", resolved
+                ident, ibug = "inside a required bug's grafted code", resolved
             elif ml:
-                ident, ibug = "matches a bug it does not need", ml
+                ident, ibug = "matches a non-required bug's site", ml
             else:
                 ident, ibug = "not a catalogued bug", []
             rows.append({
@@ -409,8 +409,8 @@ def main():
             idc[r["identified"]] += 1
             idcl[r["identified"]] += r["classes"]
         allbugs = {b for r in rows for b in r["identified_bug"].split("|") if b}
-        for k in ("matches a bug it needs", "inside the graft of a bug it needs",
-                  "matches a bug it does not need", "not a catalogued bug"):
+        for k in ("matches a required bug's site", "inside a required bug's grafted code",
+                  "matches a non-required bug's site", "not a catalogued bug"):
             if not idc[k]:
                 continue
             M.append(f"| {k} | {idc[k]} | {idcl[k]} | "
@@ -419,9 +419,9 @@ def main():
         M.append(f"| **catalogued bug identified** | | **{known}** | "
                  f"**{100*known/sum(idcl.values()):.0f}%** |")
         M.append(f"\n{len(allbugs)} distinct catalogued bugs are named. "
-                 "*Matches a bug it needs* is both signals agreeing: the crash "
+                 "*Matches a required bug's site* is both signals agreeing: the crash "
                  "requires that bug's dispatch bit and faults at the site its "
-                 "reference crash records. *Matches a bug it does not need* is "
+                 "reference crash records. *Matches a non-required bug's site* is "
                  "unmasking in the other direction — the required grafts made "
                  "a different catalogued bug reachable.\n")
         if idc["not a catalogued bug"]:
@@ -439,7 +439,7 @@ def main():
                          f"{r['crashes']} crash(es), {r['sanitizer']}. Needs "
                          f"{len(r['candidates'].split('|'))} bits. "
                          + (f"The same fault site is reached by {alt} classes "
-                            "that need no composition at all, so the site is "
+                            "that require no composition at all, so the site is "
                             "not new." if alt else
                             "**No other class reaches this site.**")
                          + f" `{r['example_testcase']}`")
@@ -470,7 +470,7 @@ def main():
                   for b in r["resolved_bug"].split("|")}
             M.append(f"**{rc} of these classes ({100*rc/sum(r['classes'] for r in rows):.0f}%) "
                      f"are resolved by where they crash**: the fault is inside "
-                     f"the grafted code of a bug the crash causally needs "
+                     f"the grafted code of a required bug "
                      f"({len(rb)} distinct bugs), a few lines from where that "
                      f"bug's reference crash was recorded. Level 2 missed them "
                      f"on the exact line, not on the identity. Column "
@@ -513,7 +513,7 @@ def main():
                      f"{'yes, ' + str(alt) + ' classes' if alt else '**no**'} |")
         M.append("\n## Every kind\n")
         M.append("| target | classes | crashes | identified as | crash site | "
-                 "needs bits of | where in the patch | fuzzers |")
+                 "required bugs | where in the patch | fuzzers |")
         M.append("|---|--:|--:|---|---|---|---|--:|")
         for r in rows:
             site = (f"`{r['top_function'] or '?'}` "
@@ -532,18 +532,16 @@ def main():
 
 VERDICT = {
     "graft-code": "**resolved** — the crash line is inside the dispatch-gated "
-                  "block of a bug the crash causally needs, so the fault is "
+                  "block of a required bug, so the fault is "
                   "in that bug's transplanted code, a few lines from where "
                   "its reference crash was recorded",
     "graft-clone": "**resolved** — inside a cloned function carrying a bug's "
-                   "name (`f_osv_2020_1715`), and that bug is one the crash "
-                   "causally needs",
-    "graft-clone-other": "inside a bug-named clone, but not one this crash "
-                         "needs",
+                   "name (`f_osv_2020_1715`), and that bug is a required one",
+    "graft-clone-other": "inside a bug-named clone, but not a required bug",
     "graft-clone-original": "inside an `_original` clone — the target's own "
                             "code, kept beside the grafted copy",
-    "graft-code-other": "inside a gated block, but of a bug the crash does "
-                        "not need",
+    "graft-code-other": "inside a gated block, but of a bug that is not "
+                        "required",
     "graft-else-original": "inside the `else` branch of a graft — the "
                            "target's own code, merely re-indented by the patch",
     "patch-added-ungated": "a line the patch added outside any dispatch "
@@ -551,7 +549,7 @@ VERDICT = {
                            "unconditional layout change)",
     "graft-hunk-context": "an unchanged line inside a hunk the patch touches "
                           "— next to a graft, not part of one",
-    "candidate-file": "same file as a causally required bug's recorded site, "
+    "candidate-file": "same file as a required bug's recorded site, "
                       "different line; the patch does not touch that file",
     "unpatched": "the transplant does not touch this file at all",
 }
@@ -569,10 +567,10 @@ PATCH_NOTE = (
 HEAD = {
     "graft_triggered_unmatched": (
         "Graft-triggered crashes that match no catalogued bug",
-        "Level 1 proves these need one bug's dispatch bit — clear it and the "
+        "Level 1 proves these require one bug's dispatch bit — clear it and the "
         "crash goes away, set it alone and it returns. Level 2 finds no "
         "catalogued bug at that crash site. This is the gap between causal "
-        "and semantic attribution: the bit says which graft a crash needs, "
+        "and semantic attribution: the bit says which graft a crash requires, "
         "not which historical bug it is."),
     "native_unmatched": (
         "Graft-independent crashes that match no catalogued bug",
@@ -582,7 +580,7 @@ HEAD = {
         "population in the analysis."),
     "graft_triggered_other_bug": (
         "Graft-triggered crashes whose site belongs to a different bug",
-        "The crash causally needs bug A's bit, but faults at bug B's recorded "
+        "The crash requires bug A's bit, but faults at bug B's recorded "
         "site. Where B is gated and its bit is off, the match is already "
         "vetoed by level 1 and never reaches this file; what remains is "
         "mostly B ungated — unmasking, where A makes B reachable."),

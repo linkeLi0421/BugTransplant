@@ -477,7 +477,7 @@ def main():
              else "10") for f in FZ) + " |")
     P("\nBold marks incomplete coverage; those cells are `n/a` below, not zero.")
     for kind, why in (("ungated", "credit rests on crash-site matching alone"),
-                      ("gated", "credit is causal -- the crash needs that bit")):
+                      ("gated", "credit is causal -- the crash requires that bit")):
         P(f"\n### {kind} bugs ({why})\n")
         P("| target | in catalogue | " + " | ".join(FZ) + " | union |")
         P("|---|--:|" + "--:|" * (len(FZ) + 1))
