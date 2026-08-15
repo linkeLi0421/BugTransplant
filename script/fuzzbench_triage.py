@@ -543,8 +543,15 @@ def scan_coverage_for_bugs(experiment_dir: Path, benchmark: str,
     for bug_id, info in bug_metadata["bugs"].items():
         if relevant_bug_ids is not None and bug_id not in relevant_bug_ids:
             continue
-        crash_file = info.get("crash_file")
-        crash_line = info.get("crash_line")
+        # reach_file/reach_line override the coverage probe when the faulting
+        # line is not a faithful "the fuzzer got here" signal. Needed when a
+        # bug's crash site is generic runtime code reached by every input
+        # (e.g. ghostscript OSV-2022-422 crashes inside the garbage collector's
+        # marking loop, which runs at every interpreter teardown) — see
+        # case_study_ghostscript_osv_2022_422_crash_site_drift.md. Stack-frame
+        # attribution keeps using crash_file/crash_line.
+        crash_file = info.get("reach_file") or info.get("crash_file")
+        crash_line = info.get("reach_line") or info.get("crash_line")
         if crash_file and crash_line:
             # Normalize away "/./" etc. — metadata paths like
             # /src/ghostpdl/./psi/idict.c never suffix-match the clean

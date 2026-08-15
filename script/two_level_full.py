@@ -71,11 +71,18 @@ UBSAN_TYPES = ("Undefined-shift", "Integer-overflow", "Index-out-of-bounds",
 # first remaining frame.
 INFRA_PATH = re.compile(r"^(/src/llvm-project/|/lib/x86_64-linux-gnu/|"
                         r"/usr/lib/|/usr/include/|/build/glibc)")
+# Sanitizer namespaces are matched as PREFIXES; libc functions must match the
+# WHOLE name.  Matching those as prefixes too silently ate project functions
+# that merely start with one -- libredwg's `free_preR13_object` was skipped as
+# if it were libc `free`, which is why 1,632 classes of its double-free bug
+# (OSV-2023-440, recorded at exactly that function) matched nothing.
 INFRA_FUNC = re.compile(
     r"^(__asan|__ubsan|__msan|__tsan|__interceptor|__sanitizer|_asan|asan_|"
-    r"AddressIsPoisoned|printf_common|atomic_|malloc|free|calloc|realloc|"
-    r"memcpy|memmove|memset|strlen|strnlen|strcpy|strncpy|strcat|strncat|"
-    r"strdup|strndup|operator new|operator delete)")
+    r"AddressIsPoisoned|printf_common|atomic_)")
+INFRA_LIBC = re.compile(
+    r"^(malloc|free|calloc|realloc|memcpy|memmove|memset|strlen|strnlen|"
+    r"strcpy|strncpy|strcat|strncat|strdup|strndup|"
+    r"operator new(\[\])?|operator delete(\[\])?)$")
 
 
 # A frame the symbolizer could not resolve to source keeps the module in the
@@ -88,6 +95,7 @@ INFRA_MODULE = re.compile(r"\((/lib/|/usr/lib/|/lib64/|<unknown module>)")
 def is_infra(func, path):
     return (bool(INFRA_PATH.match(path or ""))
             or bool(INFRA_FUNC.match(func or ""))
+            or bool(INFRA_LIBC.match(func or ""))
             or (not path and bool(INFRA_MODULE.search(func or ""))))
 
 
