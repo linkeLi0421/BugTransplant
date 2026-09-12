@@ -2405,7 +2405,8 @@ def get_trace_log_bash(commit:str, args, apply_patch:bool=True):
     # Compile and collect trace
     compile;
     timeout 100 /out/{args.fuzzer_name} /corpus/{args.test_input};
-    python3 /script/symbolizer.py -b /out/{args.fuzzer_name} -o /data/target_trace-{commit[:8]}-{args.test_input}{args.patch.split('/')[-1].split('.diff')[0] if args.patch and apply_patch else ''}.txt --source_path {workdir} /tmp/trace.txt;
+    mkdir -p /data/trace;
+    python3 /script/symbolizer.py -b /out/{args.fuzzer_name} -o /data/trace/target_trace-{commit[:8]}-{args.test_input}{args.patch.split('/')[-1].split('.diff')[0] if args.patch and apply_patch else ''}.txt --source_path {workdir} /tmp/trace.txt;
   '''
   return bash_trace
 
@@ -2417,14 +2418,14 @@ def get_allowlist_bash(args):
   if args.two_bug_mode:
     bash_allowlist = f'''
     mkdir -p /data/allowlist;
-    python3 /script/read_func_trace.py /data/target_trace-{short_bc1}-{args.test_input}.txt > /data/allowlist/allowlist-{short_bc1}-full-{args.test_input}.txt;
-    python3 /script/compare_trace.py /data/target_trace-{short_bc1}-{args.test_input}.txt /data/target_trace-{short_bc2}-{args.test_input}.txt --two_bug_mode > /data/allowlist/allowlist-{short_bc1}-{short_bc2}-{args.test_input}.txt;
+    python3 /script/read_func_trace.py /data/trace/target_trace-{short_bc1}-{args.test_input}.txt > /data/allowlist/allowlist-{short_bc1}-full-{args.test_input}.txt;
+    python3 /script/compare_trace.py /data/trace/target_trace-{short_bc1}-{args.test_input}.txt /data/trace/target_trace-{short_bc2}-{args.test_input}.txt --two_bug_mode > /data/allowlist/allowlist-{short_bc1}-{short_bc2}-{args.test_input}.txt;
     '''
   else:
     bash_allowlist = f'''
     mkdir -p /data/allowlist;
-    python3 /script/read_func_trace.py /data/target_trace-{short_bc1}-{args.test_input}.txt > /data/allowlist/allowlist-{short_bc1}-full-{args.test_input}.txt;
-    python3 /script/compare_trace.py /data/target_trace-{short_bc1}-{args.test_input}.txt /data/target_trace-{short_bc2}-{args.test_input}.txt > /data/allowlist/allowlist-{short_bc1}-{short_bc2}-{args.test_input}.txt;
+    python3 /script/read_func_trace.py /data/trace/target_trace-{short_bc1}-{args.test_input}.txt > /data/allowlist/allowlist-{short_bc1}-full-{args.test_input}.txt;
+    python3 /script/compare_trace.py /data/trace/target_trace-{short_bc1}-{args.test_input}.txt /data/trace/target_trace-{short_bc2}-{args.test_input}.txt > /data/allowlist/allowlist-{short_bc1}-{short_bc2}-{args.test_input}.txt;
     '''
   return bash_allowlist
 
@@ -2819,7 +2820,7 @@ def get_poc_for_new_version(args):
     short_bc = args.buggy_commit[:8] if len(args.buggy_commit) > 8 else args.buggy_commit
     bash_allowlist = f'''
     mkdir -p /data/allowlist;
-    python3 /script/read_func_trace.py  /data/target_trace-{short_bc}-{args.test_input}.txt --signature-changes /data/signature_change_list/{args.signature_changes} -o /data/allowlist/allowlist-{short_bc}-{args.test_input}.txt;
+    python3 /script/read_func_trace.py  /data/trace/target_trace-{short_bc}-{args.test_input}.txt --signature-changes /data/signature_change_list/{args.signature_changes} -o /data/allowlist/allowlist-{short_bc}-{args.test_input}.txt;
     '''
     return bash_allowlist
 
@@ -2832,7 +2833,7 @@ def get_poc_for_new_version(args):
     run_args.pop()
 
   # Get the function trace in the target commit with patch that reverts some patches
-  if not os.path.exists(f"{result_dir}/target_trace-{args.target_commit[:8]}-{args.test_input}{args.patch.split('/')[-1].split('.diff')[0] if args.patch else ''}.txt"):
+  if not os.path.exists(f"{result_dir}/trace/target_trace-{args.target_commit[:8]}-{args.test_input}{args.patch.split('/')[-1].split('.diff')[0] if args.patch else ''}.txt"):
     prepare_repository(OSS_FUZZ_DIR, oss_fuzz_commit_target, args.project.name, builder_digest)
     run_args.extend([get_trace_log_bash(args.target_commit, args, apply_patch = True)])
     clean(args, out_dir)

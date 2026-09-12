@@ -29,6 +29,7 @@ The verification protocol is:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 
@@ -36,6 +37,17 @@ logger = logging.getLogger(__name__)
 
 _VERIFY_ATTEMPTS = 20
 _RUNS_PER_ATTEMPT = 10
+
+# libFuzzer resident-memory cap for replay. The 2048 MB default aborts with
+# `out-of-memory` before an OOM-adjacent bug's real crash can fire; c-blosc2
+# OSV-2021-464 allocates ~2.1 GB in init_thread_context and the benchmark's
+# own reference command pins -rss_limit_mb=8192 for exactly that reason.
+# 8192 still was not enough here, because the verifier replays the input
+# _RUNS_PER_ATTEMPT times in one process and the allocations accumulate,
+# where the reference command executes it once. Scale the cap with the run
+# count instead of matching the single-shot number. Override with
+# $BUG_VERIFY_RSS_LIMIT_MB on a smaller host.
+_RSS_LIMIT_MB = int(os.environ.get("BUG_VERIFY_RSS_LIMIT_MB", "24576"))
 
 
 # ---------------------------------------------------------------------------
@@ -221,16 +233,12 @@ def verify_bug_triggers(
         env_prefix = f"export ASAN_OPTIONS={asan_opts}; "
         logger.debug("[%s] verify variant=%s", bug_id, variant_name)
         for attempt in range(_VERIFY_ATTEMPTS):
-            # -rss_limit_mb=8192: libFuzzer's 2 GB default makes OOM-adjacent
-            # bugs (e.g. c-blosc2 OSV-2021-464) exit cleanly on RSS before
-            # the actual ASAN crash fires, so the verifier sees no SUMMARY
-            # and reports the bug as non-triggering.
             cmd = (
                 f"{env_prefix}"
                 f"if [ ! -x {fuzzer_path} ]; then "
                 f"echo 'ERROR: {fuzzer_path} not found'; exit 99; fi; "
                 f"{fuzzer_path} -runs={_RUNS_PER_ATTEMPT} "
-                f"-rss_limit_mb=8192 /work/{testcase} 2>&1"
+                f"-rss_limit_mb={_RSS_LIMIT_MB} /work/{testcase} 2>&1"
             )
             ret, output = _exec_capture_cmd(container, cmd, timeout=120)
             last_ret = ret

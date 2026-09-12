@@ -63,6 +63,8 @@ from bug_transplant_merge import (
     _prepare_container_testcases_dir,
     _save_work_testcase_to_host,
     CONTAINER_TESTCASES_DIR,
+    SETENV_SCRIPT,
+    load_setenv_defaults,
 )
 
 
@@ -1734,6 +1736,7 @@ def _save_progress(output_dir, dispatch_state, merge_results, applied_bugs):
 # ---------------------------------------------------------------------------
 
 def main():
+    filled = load_setenv_defaults("TESTCASES", "REPO_PATH", "BUGINFO_PATH")
     parser = argparse.ArgumentParser(
         description="Offline dispatch-wrapped merge of per-bug transplant patches",
     )
@@ -1747,8 +1750,10 @@ def main():
                         help="Override target commit")
     parser.add_argument("--build_csv", default=None,
                         help="Build CSV for historical image pinning")
-    parser.add_argument("--testcases-dir", default=None,
-                        help="Directory containing testcase files")
+    parser.add_argument("--testcases-dir",
+                        default=os.environ.get("TESTCASES") or None,
+                        help="Directory containing testcase files "
+                             "(default: $TESTCASES, else script/setenv.sh)")
     parser.add_argument("--local-bugs", nargs="*", default=None,
                         help="Bug IDs that already trigger at target")
     parser.add_argument("--model", default=None,
@@ -1775,6 +1780,8 @@ def main():
     args = parser.parse_args()
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+    for name, value in filled.items():
+        logger.info("%s not in environment; using %s from %s", name, value, SETENV_SCRIPT)
 
     return run_offline_merge(args)
 

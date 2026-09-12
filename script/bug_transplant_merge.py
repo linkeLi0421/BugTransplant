@@ -828,8 +828,8 @@ def start_merge_container(
 
     # Codex credentials for conflict resolution (login mode)
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import CODEX_CONFIG
-    cred_dir = Path.home() / CODEX_CONFIG["credentials_dir"]
+    from bug_transplant import CODEX_CONFIG, codex_cred_dir
+    cred_dir = codex_cred_dir()
     if cred_dir.exists():
         docker_cmd += ["-v", f"{cred_dir}:/tmp/.agent-creds-src:ro"]
 

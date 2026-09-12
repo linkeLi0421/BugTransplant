@@ -19,7 +19,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-GUARD = re.compile(r"__bug_dispatch\[(\d+)\]\s*&\s*\(1\s*<<\s*(\d+)\)")
+GUARD = re.compile(r"__bug_dispatch\[(\d+)\]\s*&\s*\(1[uU]?\s*<<\s*(\d+)\)")
 
 
 def norm(line):

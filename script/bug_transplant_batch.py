@@ -50,6 +50,13 @@ HOME_DIR = SCRIPT_DIR.parent
 DATA_DIR = HOME_DIR / "data"
 BUG_TRANSPLANT_SCRIPT = SCRIPT_DIR / "bug_transplant.py"
 
+sys.path.insert(0, str(SCRIPT_DIR))
+from bug_transplant import (  # noqa: E402
+    SETENV_SCRIPT,
+    load_setenv_defaults,
+    set_active_agent as _set_active_agent,
+)
+
 
 # ---------------------------------------------------------------------------
 # CSV parsing (from revert_patch_test.py lines 1016-1045)
@@ -255,6 +262,8 @@ def collect_all_crash_trace_data(
     FUZZ_HELPER = SCRIPT_DIR / "fuzz_helper.py"
     crash_dir = DATA_DIR / "crash"
     crash_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir = DATA_DIR / "trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
 
     for bug_id, buggy_commit, metadata in bug_tasks:
         testcase = metadata["testcase"]
@@ -283,7 +292,7 @@ def collect_all_crash_trace_data(
                 logger.info("[%s] Crash data collected: %s", bug_id, crash_file)
 
         # --- Trace ---
-        trace_file = DATA_DIR / f"target_trace-{buggy_short}-{testcase}.txt"
+        trace_file = trace_dir / f"target_trace-{buggy_short}-{testcase}.txt"
         if not trace_file.exists():
             logger.info("[%s] Collecting trace data at %s...", bug_id, buggy_short)
             cmd = [
@@ -532,6 +541,10 @@ def run_single_bug(
     ]
     if args.build_csv:
         cmd += ["--build-csv", args.build_csv]
+    if getattr(args, "agent", None):
+        cmd += ["--agent", args.agent]
+    cmd.append("--skip-verify" if getattr(args, "skip_verify", True)
+               else "--verify")
     if args.runner_image:
         cmd += ["--runner-image", args.runner_image]
     if args.skip_collect:
@@ -798,6 +811,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Process specific bug(s) only")
 
     # Execution
+    parser.add_argument("--agent", choices=["codex", "opencode"],
+                        default="codex",
+                        help="Agent CLI backend (default: codex)")
+    parser.add_argument("--skip-verify", dest="skip_verify",
+                        action="store_true", default=True,
+                        help="Keep the agent's diff even when the post-agent "
+                             "crash check does not reproduce the reference "
+                             "stack (DEFAULT). Diffs kept this way are "
+                             "UNVERIFIED -- they record what the agent did, "
+                             "not that the bug reproduces.")
+    parser.add_argument("--verify", dest="skip_verify", action="store_false",
+                        help="Enforce the verification gate: diffs whose "
+                             "crash stack does not match the reference are "
+                             "discarded and those bugs marked failed.")
     parser.add_argument("--model", default=None,
                         help="Model to use (passed to agent CLI)")
     parser.add_argument("--jobs", type=int, default=1,
@@ -842,8 +869,10 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    filled = load_setenv_defaults("TESTCASES", "REPO_PATH", "BUGINFO_PATH")
     parser = build_parser()
     args = parser.parse_args()
+    _set_active_agent(getattr(args, "agent", "codex"))
 
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -851,11 +880,8 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
-
-    # Validate
-    if not args.testcases_dir:
-        logger.error("Testcases dir not set. Use --testcases-dir or $TESTCASES.")
-        return 1
+    for name, value in filled.items():
+        logger.info("%s not in environment; using %s from %s", name, value, SETENV_SCRIPT)
 
     # ------------------------------------------------------------------
     # 1. Load data
