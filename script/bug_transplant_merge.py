@@ -376,12 +376,33 @@ def _annotate_diff_ownership(
 # Dispatch branch infrastructure
 # ---------------------------------------------------------------------------
 
+# Exclusive slot dispatch. The prefix bytes are read as one little-endian
+# selector; dividing it by the slice width yields exactly one slot, so at most
+# one bug's code is ever live in a run. Slot 0 is reserved for "no bug", which
+# is what seeds and local/testcase-only PoCs carry, and the tail values above
+# SLOTS*SLICE clamp to it as well. This replaces the old bitmask, where every
+# bit was independent and one bug's patch routinely shadowed another's.
 _DISPATCH_HEADER_TEMPLATE = """\
 #ifndef __BUG_DISPATCH_H
 #define __BUG_DISPATCH_H
 #include <stdint.h>
 #define __BUG_DISPATCH_BYTES {dispatch_bytes}
+#define __BUG_DISPATCH_SLOTS {dispatch_slots}
+#define __BUG_DISPATCH_SLICE {dispatch_slice}
 extern volatile uint8_t __bug_dispatch[__BUG_DISPATCH_BYTES];
+
+/* Selected slot: 0 = no bug, 1..SLOTS-1 = the bug with that slot. */
+static inline unsigned long __bug_dispatch_slot(void) {{
+  unsigned long v = 0;
+  int i;
+  for (i = __BUG_DISPATCH_BYTES - 1; i >= 0; --i) {{
+    v = (v << 8) | (unsigned long)__bug_dispatch[i];
+  }}
+  v /= (unsigned long)__BUG_DISPATCH_SLICE;
+  return v < (unsigned long)__BUG_DISPATCH_SLOTS ? v : 0UL;
+}}
+
+#define __BUG_ACTIVE(n) (__bug_dispatch_slot() == (unsigned long)(n))
 #endif
 """
 
@@ -389,6 +410,25 @@ _DISPATCH_SOURCE = """\
 #include "__bug_dispatch.h"
 volatile uint8_t __bug_dispatch[__BUG_DISPATCH_BYTES] = {0};
 """
+
+def _dispatch_geometry(dispatch_state: dict) -> tuple[int, int, int]:
+    """``(bytes, slots, slice)`` for the exclusive-slot dispatch header.
+
+    Prefers the values the offline merge computes upfront. The legacy
+    incremental merge only tracks a running bug count, so derive the geometry
+    from it -- note that growing the bug count changes the slice width and
+    therefore moves every previously assigned slot, which is why the offline
+    merge (which knows N before wrapping anything) is the supported path.
+    """
+    slots = dispatch_state.get("dispatch_slots")
+    if not slots:
+        slots = max(2, int(dispatch_state.get("next_bit", 1)) + 1)
+    nbytes = int(dispatch_state.get("dispatch_bytes") or 1)
+    while (1 << (8 * nbytes)) < slots:
+        nbytes += 1
+    dslice = dispatch_state.get("dispatch_slice") or ((1 << (8 * nbytes)) // slots)
+    return nbytes, slots, max(1, int(dslice))
+
 
 _MAX_STEP_RETRIES = 1
 
@@ -460,10 +500,15 @@ def _patch_ntopng_build_sh_for_dispatch(container: str) -> None:
 
 
 def _inject_dispatch_files(
-    container: str, project: str, dispatch_bytes: int = 1,
+    container: str, project: str, dispatch_bytes: int,
+    dispatch_slots: int, dispatch_slice: int,
 ) -> None:
     """Create __bug_dispatch.h and __bug_dispatch.c in the source dir."""
-    header = _DISPATCH_HEADER_TEMPLATE.format(dispatch_bytes=dispatch_bytes)
+    header = _DISPATCH_HEADER_TEMPLATE.format(
+        dispatch_bytes=dispatch_bytes,
+        dispatch_slots=dispatch_slots,
+        dispatch_slice=dispatch_slice,
+    )
     src = _source_dir(project)
     for fname, content in (("__bug_dispatch.h", header),
                            ("__bug_dispatch.c", _DISPATCH_SOURCE)):
@@ -471,8 +516,11 @@ def _inject_dispatch_files(
             container,
             f"cat > {src}/{fname} << 'DISPATCH_EOF'\n{content}DISPATCH_EOF",
         )
-    logger.info("Injected __bug_dispatch.h/.c into /src/%s (bytes=%d)",
-                project, dispatch_bytes)
+    logger.info(
+        "Injected __bug_dispatch.h/.c into /src/%s "
+        "(bytes=%d slots=%d slice=%d)",
+        project, dispatch_bytes, dispatch_slots, dispatch_slice,
+    )
 
 
 def _apply_all_dispatch_bytes(
@@ -515,7 +563,7 @@ def _ensure_dispatch_capacity(
         return
     dispatch_state["dispatch_bytes"] = needed
     logger.info("Growing dispatch array: %d -> %d byte(s)", current, needed)
-    _inject_dispatch_files(container, project, needed)
+    _inject_dispatch_files(container, project, *_dispatch_geometry(dispatch_state))
     _rebuild_and_apply_dispatch(container, project, dispatch_state)
 
 
@@ -573,7 +621,7 @@ def _modify_harness_for_dispatch(
     wired the build system, not just the harness source).
     """
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import setup_codex_creds, build_codex_command
+    from bug_transplant import setup_codex_creds, build_codex_command, active_agent
 
     setup_codex_creds(container)
 
@@ -1040,9 +1088,9 @@ def resolve_conflict_with_agent(
       ``"failed"``    – could not resolve
     """
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import setup_codex_creds, build_codex_command
+    from bug_transplant import setup_codex_creds, build_codex_command, active_agent
 
-    logger.info("[%s] Invoking codex to resolve conflict...", bug_id)
+    logger.info("[%s] Invoking %s to resolve conflict...", bug_id, active_agent())
     setup_codex_creds(container)
 
     diff_name = Path(diff_path).name
@@ -1072,7 +1120,7 @@ def resolve_conflict_with_agent(
         "conflict_resolve_dispatch",
         project=project, applied_list=applied_list, diff_name=diff_name,
         bug_id=bug_id, conflict_desc=conflict_desc,
-        dispatch_byte=dispatch_bit // 8, dispatch_bit=dispatch_bit % 8,
+        dispatch_slot=dispatch_bit,
         source_dir=_source_dir(project),
     )
     if feedback:
@@ -1087,8 +1135,9 @@ def resolve_conflict_with_agent(
     ret, output = _exec_capture(container, agent_cmd, timeout=1800)
 
     if ret != 0:
-        logger.error("[%s] codex agent failed (exit %d): %s",
-                     bug_id, ret, output[-500:] if output else "(no output)")
+        logger.error("[%s] %s agent failed (exit %d): %s",
+                     bug_id, active_agent(), ret,
+                     output[-500:] if output else "(no output)")
         return "failed"
 
     # Verify it compiles
@@ -1099,7 +1148,7 @@ def resolve_conflict_with_agent(
 
     # Determine whether dispatch branches were used
     if dispatch_bit is not None and "DISPATCH_USED" in output:
-        logger.info("[%s] Conflict resolved with dispatch branch (bit %s)",
+        logger.info("[%s] Conflict resolved with dispatch branch (slot %s)",
                     bug_id, dispatch_bit)
         return "dispatch"
 
@@ -1129,11 +1178,11 @@ def resolve_with_dispatch(
     Returns True if dispatch was applied and build succeeds.
     """
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import setup_codex_creds, build_codex_command
+    from bug_transplant import setup_codex_creds, build_codex_command, active_agent
 
-    logger.info("[%s] Invoking codex to add dispatch branches (bit %d) "
+    logger.info("[%s] Invoking %s to add dispatch branches (slot %d) "
                 "for %d regressed bugs...",
-                bug_id, dispatch_bit, len(regressed_bugs))
+                bug_id, active_agent(), dispatch_bit, len(regressed_bugs))
 
     setup_codex_creds(container)
 
@@ -1166,7 +1215,7 @@ def resolve_with_dispatch(
     prompt = _load_prompt(
         "regression_dispatch",
         project=project, bug_id=bug_id, regressed_ids=regressed_ids,
-        dispatch_byte=dispatch_bit // 8, dispatch_bit=dispatch_bit % 8,
+        dispatch_slot=dispatch_bit,
         patch_list=patch_list,
     )
     if feedback:
@@ -1189,7 +1238,7 @@ def resolve_with_dispatch(
         logger.error("[%s] Build failed after dispatch resolution", bug_id)
         return False
 
-    logger.info("[%s] Dispatch branches added (bit %d)", bug_id, dispatch_bit)
+    logger.info("[%s] Dispatch branches added (slot %d)", bug_id, dispatch_bit)
     return True
 
 
@@ -1477,11 +1526,11 @@ def resolve_self_trigger_with_dispatch(
     Returns True if dispatch was applied and build succeeds.
     """
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import setup_codex_creds, build_codex_command
+    from bug_transplant import setup_codex_creds, build_codex_command, active_agent
 
-    logger.info("[%s] Invoking codex to unblock self-trigger (bit %d), "
+    logger.info("[%s] Invoking %s to unblock self-trigger (slot %d), "
                 "analyzing %d previous patches...",
-                bug_id, dispatch_bit, len(applied_bugs_data))
+                bug_id, active_agent(), dispatch_bit, len(applied_bugs_data))
 
     setup_codex_creds(container)
 
@@ -1519,7 +1568,7 @@ def resolve_self_trigger_with_dispatch(
         "self_trigger_dispatch",
         project=project, bug_id=bug_id, crash_line=crash_line,
         prev_list=prev_list,
-        dispatch_byte=dispatch_bit // 8, dispatch_bit=dispatch_bit % 8,
+        dispatch_slot=dispatch_bit,
     )
     if feedback:
         prompt += (
@@ -1541,7 +1590,7 @@ def resolve_self_trigger_with_dispatch(
         logger.error("[%s] Build failed after self-trigger dispatch", bug_id)
         return False
 
-    logger.info("[%s] Self-trigger dispatch applied (bit %d)", bug_id,
+    logger.info("[%s] Self-trigger dispatch applied (slot %d)", bug_id,
                 dispatch_bit)
     return True
 
@@ -2119,8 +2168,8 @@ def run_merge(args: argparse.Namespace) -> int:
 
             # Re-inject dispatch files if they were used (with correct size)
             if dispatch_state.get("dispatch_file_injected"):
-                dbytes = dispatch_state.get("dispatch_bytes", 1)
-                _inject_dispatch_files(container, project, dbytes)
+                _inject_dispatch_files(
+                    container, project, *_dispatch_geometry(dispatch_state))
 
             # Rebuild all_verified_bugs from saved IDs
             saved_ids = set(saved["all_verified_bug_ids"])
@@ -2285,7 +2334,7 @@ def run_merge(args: argparse.Namespace) -> int:
 
                     # Inject dispatch files on first conflict (idempotent)
                     if not dispatch_state["dispatch_file_injected"]:
-                        _inject_dispatch_files(container, project, dispatch_state.get("dispatch_bytes", 1))
+                        _inject_dispatch_files(container, project, *_dispatch_geometry(dispatch_state))
                         dispatch_state["dispatch_file_injected"] = True
 
                     _ensure_dispatch_capacity(dispatch_state, container, project)
@@ -2309,7 +2358,11 @@ def run_merge(args: argparse.Namespace) -> int:
                             "bug_existing": [c["bug_id"] for c in conflicting],
                         }
                         dispatch_state["poc_bytes"].setdefault(bug_id, 0)
-                        dispatch_state["poc_bytes"][bug_id] |= (1 << bit_index)
+                        # Exclusive dispatch: a PoC carries one slot selector,
+                        # not an OR-ed bitmask. Assign, never accumulate.
+                        _dslice = dispatch_state.get("dispatch_slice", 1)
+                        dispatch_state["poc_bytes"][bug_id] = (
+                            bit_index * _dslice + _dslice // 2)
                         for c in conflicting:
                             dispatch_state["poc_bytes"].setdefault(c["bug_id"], 0)
                         dispatch_state["next_bit"] += 1
@@ -2451,7 +2504,7 @@ def run_merge(args: argparse.Namespace) -> int:
 
                     if undispatched:
                         if not dispatch_state["dispatch_file_injected"]:
-                            _inject_dispatch_files(container, project, dispatch_state.get("dispatch_bytes", 1))
+                            _inject_dispatch_files(container, project, *_dispatch_geometry(dispatch_state))
                             dispatch_state["dispatch_file_injected"] = True
 
                         _ensure_dispatch_capacity(dispatch_state, container, project)
@@ -2492,7 +2545,11 @@ def run_merge(args: argparse.Namespace) -> int:
                                     "type": "self_trigger_unblock",
                                 }
                                 dispatch_state["poc_bytes"].setdefault(bug_id, 0)
-                                dispatch_state["poc_bytes"][bug_id] |= (1 << bit_index)
+                                # Exclusive dispatch: a PoC carries one slot selector,
+                                # not an OR-ed bitmask. Assign, never accumulate.
+                                _dslice = dispatch_state.get("dispatch_slice", 1)
+                                dispatch_state["poc_bytes"][bug_id] = (
+                                    bit_index * _dslice + _dslice // 2)
                                 dispatch_state["next_bit"] += 1
 
                                 _rebuild_and_apply_dispatch(
@@ -2572,7 +2629,7 @@ def run_merge(args: argparse.Namespace) -> int:
 
                         # Inject dispatch files on first use
                         if not dispatch_state["dispatch_file_injected"]:
-                            _inject_dispatch_files(container, project, dispatch_state.get("dispatch_bytes", 1))
+                            _inject_dispatch_files(container, project, *_dispatch_geometry(dispatch_state))
                             dispatch_state["dispatch_file_injected"] = True
 
                         _ensure_dispatch_capacity(dispatch_state, container, project)
@@ -2609,7 +2666,11 @@ def run_merge(args: argparse.Namespace) -> int:
                                     "bug_existing": [b["bug_id"] for b in regressed],
                                 }
                                 dispatch_state["poc_bytes"].setdefault(bug_id, 0)
-                                dispatch_state["poc_bytes"][bug_id] |= (1 << bit_index)
+                                # Exclusive dispatch: a PoC carries one slot selector,
+                                # not an OR-ed bitmask. Assign, never accumulate.
+                                _dslice = dispatch_state.get("dispatch_slice", 1)
+                                dispatch_state["poc_bytes"][bug_id] = (
+                                    bit_index * _dslice + _dslice // 2)
                                 for b in regressed:
                                     dispatch_state["poc_bytes"].setdefault(b["bug_id"], 0)
                                 dispatch_state["next_bit"] += 1

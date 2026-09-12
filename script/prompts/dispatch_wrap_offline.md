@@ -1,16 +1,20 @@
 # Offline Dispatch Wrapping
 
-Wrap a standalone bug transplant patch with bitmask-based dispatch so it
+Wrap a standalone bug transplant patch with exclusive-slot dispatch so it
 can coexist with other bugs in the same binary, and prepend the dispatch
-byte to its testcase.
+bytes to its testcase.
 
 ## Prompt
 
 I am preparing bug transplant patches for project {project} to be merged
-into a single binary. Each bug gets a bit in a dispatch bitmask so the
-fuzzer can select which bug's code path is active at runtime.
+into a single binary. The dispatch prefix selects exactly ONE bug per run:
+the prefix bytes are read as a little-endian selector and divided into equal
+slices, so at most one bug's code path is ever active. Slot 0 means "no bug".
 
-Bug {bug_id} is assigned **bit {dispatch_bit}** in `__bug_dispatch[{dispatch_byte}]`.
+Bug {bug_id} is assigned **slot {dispatch_slot}**. Test it with
+`__BUG_ACTIVE({dispatch_slot})`, which is defined in `__bug_dispatch.h`.
+Never test `__bug_dispatch[]` directly and never use bit masks: slots are
+mutually exclusive, so `__BUG_ACTIVE` is the only correct accessor.
 
 The standalone patch (works in isolation, no dispatch):
   {patch_path}
@@ -29,12 +33,12 @@ Your job:
 ### Runtime code changes (if/else blocks, function calls, assignments)
 
 For EVERY runtime code change `- OLD` / `+ NEW`, keep BOTH versions
-and gate on the dispatch bit:
+and gate on the bug's slot:
 
 ```c
 #include "__bug_dispatch.h"
 
-if (__bug_dispatch[{dispatch_byte}] & (1 << {dispatch_bit})) {{
+if (__BUG_ACTIVE({dispatch_slot})) {{
     // {bug_id}'s version (NEW — from the patch)
 }} else {{
     // Original version (OLD — before the patch)
@@ -42,36 +46,38 @@ if (__bug_dispatch[{dispatch_byte}] & (1 << {dispatch_bit})) {{
 ```
 
 For code **deletions** (lines removed, nothing added), wrap the original
-code so it is skipped when the bit is set:
+code so it is skipped when this bug's slot is selected:
 
 ```c
-if (!(__bug_dispatch[{dispatch_byte}] & (1 << {dispatch_bit}))) {{
+if (!__BUG_ACTIVE({dispatch_slot})) {{
     // Original code (skipped when {bug_id} is active)
 }}
 ```
 
 ### Macro / #define changes
 
-Use a ternary conditioned on the dispatch bit:
+Use a ternary conditioned on the bug's slot:
 
 ```c
 // BEFORE:
 #define LIMIT 4080
-// AFTER (bit {dispatch_bit} for {bug_id}):
+// AFTER (slot {dispatch_slot} for {bug_id}):
 #include "__bug_dispatch.h"
-#define LIMIT ((__bug_dispatch[{dispatch_byte}] & (1 << {dispatch_bit})) ? 4096 : 4080)
+#define LIMIT (__BUG_ACTIVE({dispatch_slot}) ? 4096 : 4080)
 ```
 
 If a macro ALREADY has a dispatch ternary from a previous bug,
 OR your condition into the existing one — do NOT replace it:
 
 ```c
-// BEFORE (bit 0 dispatching for a previous bug):
-#define LIMIT ((__bug_dispatch[0] & (1 << 0)) ? 4096 : 4080)
-// AFTER (add bit {dispatch_bit} for {bug_id}):
-#define LIMIT ((__bug_dispatch[0] & (1 << 0)) || (__bug_dispatch[{dispatch_byte}] & (1 << {dispatch_bit})) \
-    ? 4096 : 4080)
+// BEFORE (slot 3 dispatching for a previous bug):
+#define LIMIT (__BUG_ACTIVE(3) ? 4096 : 4080)
+// AFTER (add slot {dispatch_slot} for {bug_id}):
+#define LIMIT ((__BUG_ACTIVE(3) || __BUG_ACTIVE({dispatch_slot})) ? 4096 : 4080)
 ```
+
+Slots are mutually exclusive, so only one arm of such a chain can be
+true at a time. That is expected: each bug keeps its own value.
 
 ### Struct / type changes
 
@@ -96,8 +102,9 @@ duplicate it.
 ### Non-C files (scripts, resource files, data)
 
 Dispatch gating is a **protocol**, not a C idiom: at runtime, the
-active branch must be chosen by reading bit `{dispatch_bit}` of
-`__bug_dispatch[{dispatch_byte}]` from the process's memory. If the
+active branch must be chosen by reading the selected slot from
+`__bug_dispatch[]` in the process's memory and comparing it against
+`{dispatch_slot}`. If the
 patch modifies a file in another language, translate the same
 protocol using whatever mechanism that language offers — don't give
 up and don't silently drop the change.
@@ -107,7 +114,7 @@ subsequent bugs in the same language can reuse it.
 
 | File class | Accessor strategy |
 | --- | --- |
-| Interpreted language embedded in the binary (PostScript, Lua, Tcl, …) | Register a one-shot native operator that returns the bit as a bool, then branch inline with the language's `if`/`ifelse`. Example for PostScript: a new `.bug_dispatch_bit` op reading `__bug_dispatch[]`, used as `<byte> <mask> .bug_dispatch_bit {{ NEW }} {{ OLD }} ifelse`. |
+| Interpreted language embedded in the binary (PostScript, Lua, Tcl, …) | Register a one-shot native operator that returns the selected slot as an integer, then branch inline with the language's `if`/`ifelse`. Example for PostScript: a new `.bug_dispatch_slot` op returning `__bug_dispatch_slot()`, used as `.bug_dispatch_slot {dispatch_slot} eq {{ NEW }} {{ OLD }} ifelse`. |
 | Scripting language running in a separate process (shell, Python standalone script) | Have the harness write `/tmp/__bug_dispatch` (raw bytes) or export an env var after setting `__bug_dispatch[]`; the script reads it and branches on the bit. |
 | FFI-capable runtime (Python, Ruby, Node) running in-process | Look up the `__bug_dispatch` symbol via `ctypes`/FFI and branch natively. |
 | Pure data resource with no logic (JSON, YAML, images, binary tables) | Don't try to gate inline. Keep both files (e.g. `foo.json` and `foo.bug_{bug_id}.json`) and gate the **loader code** (a C-level `if` that picks which path to open) on the dispatch bit. |
@@ -156,20 +163,24 @@ summary — do not pretend the patch was wrapped.
 
 ## Testcase update
 
-The fuzzer harness reads `__bug_dispatch` from the first byte(s) of
-the test input. Prepend the correct bitmask byte to the testcase:
+The fuzzer harness reads `__bug_dispatch` from the first {dispatch_nbytes}
+byte(s) of the test input, little-endian. Prepend this bug's selector value:
 
-- Bit {dispatch_bit} → byte value `{dispatch_value}` (decimal)
+- Slot {dispatch_slot} → selector value `{dispatch_value}` (decimal), the
+  middle of that slot's slice, so the value lands in the right slot even if
+  an encoder is off by one
 - Original testcase at `{testcase_path}` → output to `{output_testcase_path}`
 
 ```bash
 python3 -c "
 d = open('{testcase_path}', 'rb').read()
-open('{output_testcase_path}', 'wb').write(bytes([{dispatch_value}]) + d)
+p = ({dispatch_value}).to_bytes({dispatch_nbytes}, 'little')
+open('{output_testcase_path}', 'wb').write(p + d)
 "
 ```
 
-Local bugs (no dispatch bit) get byte value `0x00` prepended.
+Local and testcase-only bugs are native at the target commit and need no
+gating, so they get slot 0: a prefix of {dispatch_nbytes} zero byte(s).
 
 ---
 

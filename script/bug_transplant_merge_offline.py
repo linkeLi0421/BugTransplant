@@ -154,6 +154,8 @@ def _restore_testcases_with_dispatch(
         )
 from bug_transplant import (
     CODEX_CONFIG, setup_codex_creds, build_codex_command, _exec_interactive,
+    active_agent,
+    _format_codex_output,
     _source_dir,
 )
 from codex_usage import CodexUsageTracker
@@ -921,23 +923,48 @@ def assign_dispatch_bits(
     local_bugs: list[dict],
     testcase_only_bugs: list[dict],
 ) -> dict:
-    """Assign dispatch bits to bugs with diffs. Return dispatch_state."""
-    dispatch_bytes = max(1, (len(diff_bugs) - 1) // 8 + 1) if diff_bugs else 1
-    poc_bytes: dict[str, int] = {}
+    """Assign an exclusive dispatch slot to every bug with a diff.
 
-    # Diff bugs get bits
+    The prefix bytes are one little-endian selector. Dividing it by the slice
+    width picks exactly one slot, so at most one bug is ever live in a run --
+    unlike the old bitmask, where independent bits let one bug's patch shadow
+    another's and left a crashing input ambiguous between several bugs.
+
+    Slot 0 is reserved for "no bug" and is what seeds, local bugs and
+    testcase-only bugs carry. N bugs therefore need N+1 slots. The value space
+    is split evenly, so each bug owns ``slice`` consecutive values and is
+    selected by roughly 1/(N+1) of random prefixes. Byte count grows
+    automatically once the bug count exceeds what one byte can distinguish.
+
+    A bug's PoC gets the middle of its slice, so an off-by-one in any
+    downstream encoder still lands inside the right slot.
+    """
+    slots = len(diff_bugs) + 1  # slot 0 == no bug
+
+    # Smallest prefix that gives every slot at least one distinct value.
+    dispatch_bytes = 1
+    while (1 << (8 * dispatch_bytes)) < slots:
+        dispatch_bytes += 1
+
+    space = 1 << (8 * dispatch_bytes)
+    dispatch_slice = space // slots  # >= 1 by construction
+
+    poc_bytes: dict[str, int] = {}
     bits = {}
     for i, bug in enumerate(diff_bugs):
-        bits[i] = {"bug_id": bug["bug_id"]}
-        poc_bytes[bug["bug_id"]] = 1 << i
+        slot = i + 1  # slot 0 stays reserved
+        bits[slot] = {"bug_id": bug["bug_id"]}
+        poc_bytes[bug["bug_id"]] = slot * dispatch_slice + dispatch_slice // 2
 
-    # Local + testcase-only bugs get dispatch value 0 (no bit set)
+    # Local + testcase-only bugs are native at the target: slot 0, no gating.
     for bug in local_bugs + testcase_only_bugs:
         poc_bytes[bug["bug_id"]] = 0
 
     return {
-        "next_bit": len(diff_bugs),
+        "next_bit": slots,
         "dispatch_bytes": dispatch_bytes,
+        "dispatch_slots": slots,
+        "dispatch_slice": dispatch_slice,
         "bits": bits,
         "poc_bytes": poc_bytes,
         "harness_modified": False,
@@ -957,6 +984,8 @@ def wrap_bug_with_dispatch(
     dispatch_state: dict,
     model: str | None = None,
     codex_mode: str = "exec",
+    log_dir: Path | None = None,
+    attempt: int = 0,
 ) -> tuple[bool, str]:
     """Invoke codex to wrap a bug's patch with dispatch gating.
 
@@ -964,9 +993,9 @@ def wrap_bug_with_dispatch(
     """
     bug_id = bug["bug_id"]
     diff_path = bug["diff_path"]
-    dispatch_bit = bit_index % 8
-    dispatch_byte = bit_index // 8
-    dispatch_value = 1 << bit_index
+    # bit_index is now the exclusive slot number (1..N; slot 0 = no bug).
+    dispatch_slot = bit_index
+    dispatch_value = dispatch_state["poc_bytes"][bug_id]
 
     # Copy diff into container via stdin (heredoc-inlining would blow past
     # ARG_MAX for multi-MB diffs).
@@ -996,9 +1025,9 @@ def wrap_bug_with_dispatch(
         "dispatch_wrap_offline",
         project=project,
         bug_id=bug_id,
-        dispatch_bit=str(dispatch_bit),
-        dispatch_byte=str(dispatch_byte),
+        dispatch_slot=str(dispatch_slot),
         dispatch_value=str(dispatch_value),
+        dispatch_nbytes=str(dispatch_state.get("dispatch_bytes", 1)),
         patch_path=f"/tmp/patch_{bug_id}.diff",
         testcase_path=f"/work/{bug['testcase']}",
         output_testcase_path=f"/work/{bug['testcase']}",
@@ -1006,14 +1035,29 @@ def wrap_bug_with_dispatch(
 
     agent_cmd = build_codex_command(prompt, model, mode=codex_mode)
 
-    logger.info("[%s] Invoking codex for dispatch wrapping (bit %d)...",
-                bug_id, bit_index)
+    # Persist the prompt to the host. The container is destroyed at the end of
+    # the merge, so anything left only inside it is unrecoverable when a wrap
+    # fails -- which is exactly when it is needed.
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{bug_id}_attempt{attempt}.prompt.md").write_text(prompt)
+
+    logger.info("[%s] Invoking %s for dispatch wrapping (slot %d)...",
+                bug_id, active_agent(), bit_index)
     if codex_mode == "interactive":
         ret, output = _exec_interactive(container, agent_cmd, timeout=1800)
     else:
         ret, output = _exec_capture(container, agent_cmd, timeout=1800)
 
     _usage_tracker.log_usage(f"{bug_id} wrap", output, model)
+
+    if log_dir is not None:
+        stem = log_dir / f"{bug_id}_attempt{attempt}"
+        stem.with_suffix(".jsonl").write_text(output or "")
+        try:
+            stem.with_suffix(".txt").write_text(_format_codex_output(output or ""))
+        except Exception:  # formatter is best-effort; raw output is the record
+            pass
 
     if ret != 0:
         logger.error("[%s] Agent failed (exit %d)", bug_id, ret)
@@ -1043,7 +1087,8 @@ def wrap_bug_with_dispatch(
         logger.error("[%s] Wrapped patch failed dispatch verification", bug_id)
         return False, output
 
-    logger.info("[%s] Dispatch wrapping OK (verified bit-on triggers, bit-off does not)", bug_id)
+    logger.info("[%s] Dispatch wrapping OK "
+                "(slot %d triggers, slot 0 does not)", bug_id, bit_index)
     return True, output
 
 
@@ -1081,7 +1126,15 @@ def _verify_wrapped_dispatch(
     payload = Path(ptc).read_bytes()
 
     nbytes = dispatch_state.get("dispatch_bytes", 1)
-    prefix_on = (1 << bit_index).to_bytes(nbytes, "little")
+    # Exclusive dispatch: the "on" selector is this bug's slot value, not a
+    # bit. Using `1 << slot` here selected some other slot entirely (slot 1
+    # became selector 2, which floor-divides back to slot 0 = no bug), so a
+    # correctly wrapped patch verified as non-triggering.
+    selector_on = dispatch_state["poc_bytes"].get(bug_id)
+    if selector_on is None:
+        dslice = dispatch_state.get("dispatch_slice", 1)
+        selector_on = bit_index * dslice + dslice // 2
+    prefix_on = selector_on.to_bytes(nbytes, "little")
     prefix_off = b"\x00" * nbytes
 
     on_name = f"_verify_{bug_id}_on"
@@ -1204,12 +1257,20 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                 )
 
     dispatch_state = assign_dispatch_bits(diff_bugs, local_bugs, testcase_only_bugs)
-    logger.info("Dispatch bits assigned: %d bits, %d bytes",
-                dispatch_state["next_bit"], dispatch_state["dispatch_bytes"])
+    logger.info(
+        "Exclusive dispatch: %d slots (slot 0 = no bug), %d byte(s), "
+        "slice=%d values/slot",
+        dispatch_state["dispatch_slots"], dispatch_state["dispatch_bytes"],
+        dispatch_state["dispatch_slice"],
+    )
 
-    for i, bug in enumerate(diff_bugs):
-        logger.info("  bit %d → %s (value %d)",
-                     i, bug["bug_id"], dispatch_state["poc_bytes"][bug["bug_id"]])
+    for slot in sorted(dispatch_state["bits"]):
+        bug_id = dispatch_state["bits"][slot]["bug_id"]
+        value = dispatch_state["poc_bytes"][bug_id]
+        logger.info("  slot %d → %s (selector value %d, range %d-%d)",
+                    slot, bug_id, value,
+                    slot * dispatch_state["dispatch_slice"],
+                    (slot + 1) * dispatch_state["dispatch_slice"] - 1)
 
     dispatch_order = [
         dispatch_state["bits"][i]["bug_id"]
@@ -1296,7 +1357,11 @@ def run_offline_merge(args: argparse.Namespace) -> int:
             # restored above. Inject them before the dispatch-deps Makefile
             # fixer / build, otherwise the link fails with
             # "undefined reference to __bug_dispatch".
-            _inject_dispatch_files(container, project, dispatch_state["dispatch_bytes"])
+            _inject_dispatch_files(
+                container, project, dispatch_state["dispatch_bytes"],
+                dispatch_state.get("dispatch_slots", 2),
+                dispatch_state.get("dispatch_slice", 1),
+            )
             _inject_dispatch_deps_fixer(container)
             # ntopng's hand-written fuzz Makefile doesn't pick up __bug_dispatch.c
             # automatically; the saved harness_build.sh restored above doesn't
@@ -1324,7 +1389,11 @@ def run_offline_merge(args: argparse.Namespace) -> int:
             harness_diff_path = None
 
         if harness_diff_path is None:
-            _inject_dispatch_files(container, project, dispatch_state["dispatch_bytes"])
+            _inject_dispatch_files(
+                container, project, dispatch_state["dispatch_bytes"],
+                dispatch_state.get("dispatch_slots", 2),
+                dispatch_state.get("dispatch_slice", 1),
+            )
             dispatch_state["dispatch_file_injected"] = True
             ok = _modify_harness_for_dispatch(
                 container, project, primary_fuzzer,
@@ -1447,7 +1516,7 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                 logger.info("[%s] Before start-step %d, skipping", bug_id, start_step)
                 continue
 
-            logger.info("\n=== Wrap %d/%d: %s (bit %d) ===",
+            logger.info("\n=== Wrap %d/%d: %s (slot %d) ===",
                         i + 1, len(diff_bugs), bug_id, bit_index)
 
             step = {
@@ -1463,11 +1532,13 @@ def run_offline_merge(args: argparse.Namespace) -> int:
             _restore_build_sh(container, output_dir, project)
 
             output = ""
+            wrap_log_dir = output_dir / "wrap_logs"
             for attempt in range(_MAX_WRAP_RETRIES + 1):
                 success, output = wrap_bug_with_dispatch(
                     container, project, bd, bit_index,
                     dispatch_state, model=args.model,
                     codex_mode=getattr(args, "codex_mode", "exec"),
+                    log_dir=wrap_log_dir, attempt=attempt,
                 )
 
                 if success:
@@ -1485,6 +1556,25 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                         break
                     else:
                         logger.warning("[%s] Agent produced no diff after wrapping", bug_id)
+
+                # Capture what the agent actually wrote before the reset
+                # throws it away: a failed gate is only diagnosable from the
+                # diff it produced.
+                try:
+                    failed_diff = _clean_diff_against(
+                        container, project, harness_baseline_rev)
+                    if failed_diff.strip():
+                        wrap_log_dir.mkdir(parents=True, exist_ok=True)
+                        fp = wrap_log_dir / f"{bug_id}_attempt{attempt}.failed.diff"
+                        fp.write_text(failed_diff)
+                        logger.info("[%s] Saved failing wrapped diff: %s (%d bytes)",
+                                    bug_id, fp, len(failed_diff))
+                    else:
+                        logger.warning("[%s] Agent left no diff at all on this attempt",
+                                       bug_id)
+                except Exception as exc:  # diagnostics must never abort the merge
+                    logger.warning("[%s] Could not capture failing diff: %s",
+                                   bug_id, exc)
 
                 logger.warning("[%s] Attempt %d failed, retrying...",
                                bug_id, attempt + 1)
@@ -1562,8 +1652,8 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                 max_chunk = 15
                 total_patches = len(patch_descriptions)
                 logger.info(
-                    "Merging %d patches in chunks of <=%d via codex",
-                    total_patches, max_chunk,
+                    "Merging %d patches in chunks of <=%d via %s",
+                    total_patches, max_chunk, active_agent(),
                 )
 
                 applied_bugs = []
