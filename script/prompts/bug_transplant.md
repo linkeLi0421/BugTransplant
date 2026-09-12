@@ -14,7 +14,7 @@ The bug triggers at the old commit but not at the new one.
 ## Files
 
 - `/data/crash/target_crash-{buggy_short}-{testcase_name}.txt` -- original crash log
-- `/data/target_trace-{buggy_short}-{testcase_name}.txt` -- function trace from buggy commit{fix_diff_line}
+- `/data/trace/target_trace-{buggy_short}-{testcase_name}.txt` -- function trace from buggy commit{fix_diff_line}
 - `/work/{testcase_name}` -- PoC testcase (you may modify this)
 - `{source_dir}` -- source tree at `{target_commit}`
 - `{agents_md}` -- shared knowledge (read first, update when done)

@@ -38,6 +38,7 @@ import argparse
 import json
 import logging
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -60,11 +61,16 @@ logger = logging.getLogger(__name__)
 _usage_tracker = None
 
 # Pin CLI version for reproducibility.
-CODEX_VERSION = "0.116.0"  # @openai/codex
+# 0.116.0's remote-compaction endpoint 404s, killing any session that fills
+# its context window (long ghostscript runs in particular). 0.147.0 matches
+# the CLI installed on the hosts and keeps every flag this script uses.
+CODEX_VERSION = "0.147.0"  # @openai/codex
 
-# Model used for all Codex agent sessions. The ChatGPT-account auth in use
-# does not support Codex's default model (gpt-5.2-codex), so pin gpt-5.4.
-DEFAULT_MODEL = "gpt-5.4"
+# Model used for all Codex agent sessions. A ChatGPT-account login rejects
+# both Codex's default (gpt-5.2-codex) and the older gpt-5.4 with "model is
+# not supported when using Codex with a ChatGPT account"; gpt-5.6-terra is
+# the migration target named in config.toml and is what the account accepts.
+DEFAULT_MODEL = "gpt-5.6-terra"
 
 # Codex agent configuration
 CODEX_CONFIG = {
@@ -77,9 +83,194 @@ CODEX_CONFIG = {
     "model_flag": "--model",
 }
 
+# Second agent backend. opencode ships as one standalone binary that already
+# runs on the Ubuntu 20.04 project images, so it is bind-mounted at container
+# start rather than layered into the image. Its `opencode/*` models need no
+# credentials at all, which is why it is the fallback when the Codex path is
+# unavailable.
+OPENCODE_CONFIG = {
+    "cli_name": "opencode",
+    "credentials_dir": ".local/share/opencode",
+    "container_bin": "/usr/local/bin/opencode",
+}
+OPENCODE_DEFAULT_MODEL = "opencode/nemotron-3-ultra-free"
+
+# Set from --agent in main(); module-level so the batch driver and the
+# minimize pass agree on the backend without threading it through every call.
+ACTIVE_AGENT = "codex"
+
+
+def set_active_agent(agent: str) -> None:
+    global ACTIVE_AGENT
+    ACTIVE_AGENT = agent
+
+
+def opencode_host_binary() -> Path | None:
+    """The opencode executable on the host, or None when not installed."""
+    candidate = _host_home() / ".opencode" / "bin" / "opencode"
+    if candidate.exists():
+        return candidate
+    found = shutil.which("opencode")
+    return Path(found) if found else None
+
+
+def agent_mounts() -> list[str]:
+    """``docker run`` args that give the container its agent CLI."""
+    if ACTIVE_AGENT != "opencode":
+        return []
+    binary = opencode_host_binary()
+    if binary is None:
+        logger.error(
+            "--agent opencode but no opencode binary found under %s or $PATH. "
+            "Install it from https://opencode.ai before running.",
+            _host_home() / ".opencode" / "bin",
+        )
+        sys.exit(1)
+    mounts = ["-v", f"{binary}:{OPENCODE_CONFIG['container_bin']}:ro"]
+    logger.info("Mounting opencode binary %s", binary)
+
+    # `opencode auth login` writes auth.json; free `opencode/*` models need
+    # none, but a paid provider key lives there and must reach the container.
+    auth = _host_home() / OPENCODE_CONFIG["credentials_dir"] / "auth.json"
+    if auth.exists():
+        mounts += ["-v", f"{auth}:/tmp/.opencode-auth.json:ro"]
+        logger.info("Mounting opencode credentials %s", auth)
+    cfg = _host_home() / ".config" / "opencode" / "opencode.jsonc"
+    if cfg.exists():
+        mounts += ["-v", f"{cfg}:/tmp/.opencode-config.jsonc:ro"]
+    for env_var in opencode_provider_env():
+        mounts += ["-e", env_var]
+    return mounts
+
+
+# Provider keys opencode reads straight from the environment. Only those the
+# host actually sets are forwarded, and the value is never logged.
+OPENCODE_PROVIDER_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "MODELSCOPE_API_KEY",
+    "GEMINI_API_KEY",
+    "GROQ_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "TOGETHER_API_KEY",
+    "XAI_API_KEY",
+    "ZHIPUAI_API_KEY",
+)
+
+
+def opencode_provider_env() -> list[str]:
+    """``NAME=value`` for each provider key the host has set."""
+    out = []
+    for name in OPENCODE_PROVIDER_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            logger.info("Forwarding $%s to opencode", name)
+            out.append(f"{name}={value}")
+    return out
+
+
+def _host_home() -> Path:
+    """The invoking user's home, even under plain ``sudo``.
+
+    ``Path.home()`` follows $HOME, which plain ``sudo`` resets to /root. The
+    root account here carries a Codex ``auth.json`` from an unrelated login
+    whose refresh token was rotated away months ago, so mounting it makes
+    every agent die at startup with "your access token could not be
+    refreshed" and the whole batch reports `failed` with an empty diff.
+    Ask the passwd db for the real invoking user instead; not every host puts
+    homes under /home.
+    """
+    user = os.environ.get("SUDO_USER")
+    if user:
+        try:
+            return Path(pwd.getpwnam(user).pw_dir)
+        except KeyError:
+            return Path(f"/home/{user}")
+    return Path.home()
+
+
+def codex_cred_dir() -> Path:
+    """Host directory holding the Codex credentials to mount.
+
+    Logs the choice: a batch that mounts the wrong ``auth.json`` fails every
+    bug in seconds with an empty diff, and the only way to tell which store
+    was used is the docker command line.
+    """
+    cred_dir = _host_home() / CODEX_CONFIG["credentials_dir"]
+    if (cred_dir / "auth.json").exists():
+        logger.info("Codex credentials: %s", cred_dir)
+    else:
+        logger.warning(
+            "No Codex auth.json under %s -- the agent will fail at startup. "
+            "Log in on the host, or run under the account that owns the "
+            "credentials.", cred_dir,
+        )
+    return cred_dir
+
+
+def codex_api_key_env() -> list[str]:
+    """``NAME=value`` for the provider key Codex needs inside the container.
+
+    A third-party provider block in ``config.toml`` names its secret with
+    ``env_key`` and Codex reads it from the environment. The credentials
+    directory is copied into the container, so the *config* travels but the
+    *secret* does not, and the agent dies on turn one with "Missing
+    environment variable". Forward it explicitly. Returns an empty list for
+    ChatGPT OAuth, which carries its own token in ``auth.json``.
+    """
+    config = codex_cred_dir() / "config.toml"
+    if not config.exists():
+        return []
+    try:
+        import tomllib
+        with open(config, "rb") as fh:
+            cfg = tomllib.load(fh)
+    except Exception as exc:                      # malformed / unreadable
+        logger.warning("Could not parse %s: %s", config, exc)
+        return []
+
+    provider = cfg.get("model_provider")
+    if not provider:
+        return []
+    env_key = (cfg.get("model_providers", {})
+                  .get(provider, {})
+                  .get("env_key"))
+    if not env_key:
+        return []
+
+    value = os.environ.get(env_key, "")
+    if not value:
+        logger.warning(
+            "Codex provider %r needs $%s but it is unset here, so the agent "
+            "will fail on its first turn. It is likely exported in the "
+            "invoking user's shell -- run under `sudo -E` to carry it "
+            "through.", provider, env_key,
+        )
+        return []
+    logger.info("Forwarding $%s for Codex provider %r", env_key, provider)
+    return [f"{env_key}={value}"]
+
 
 def setup_codex_creds(container: str) -> None:
-    """Copy codex credentials into container."""
+    """Copy codex credentials into container.
+
+    A no-op for opencode: its free ``opencode/*`` models are unauthenticated,
+    and it keeps its own state under the container's HOME.
+    """
+    if ACTIVE_AGENT == "opencode":
+        _exec(
+            container,
+            "mkdir -p /home/agent/.local/share/opencode /home/agent/.config/opencode; "
+            "[ -f /tmp/.opencode-auth.json ] && "
+            "cp /tmp/.opencode-auth.json /home/agent/.local/share/opencode/auth.json; "
+            "[ -f /tmp/.opencode-config.jsonc ] && "
+            "cp /tmp/.opencode-config.jsonc /home/agent/.config/opencode/opencode.jsonc; "
+            "chown -R agent:agent /home/agent/.local /home/agent/.config 2>/dev/null; "
+            "true",
+            user="root",
+        )
+        return
     _exec(
         container,
         "cp -r /tmp/.agent-creds-src /home/agent/.codex 2>/dev/null; "
@@ -104,6 +295,17 @@ def build_codex_command(
     to continue the specified session instead of starting a new one.
     """
     escaped = shlex.quote(prompt)
+    if ACTIVE_AGENT == "opencode":
+        # `--auto` is opencode's approval bypass; `--format json` gives the
+        # per-part event stream the output parser reads.
+        cmd = "opencode run --auto"
+        if resume_session:
+            cmd += f" --session {shlex.quote(resume_session)}"
+        cmd += f" --model {shlex.quote(model or OPENCODE_DEFAULT_MODEL)}"
+        if mode != "interactive":
+            cmd += " --format json"
+        return f"{cmd} -- {escaped}"
+
     if mode == "interactive":
         cmd = f"codex --dangerously-bypass-approvals-and-sandbox {escaped}"
     elif resume_session:
@@ -129,10 +331,15 @@ def _extract_session_id(jsonl_output: str) -> str | None:
             continue
         try:
             obj = json.loads(line)
-            if obj.get("type") == "session_meta":
-                return obj.get("payload", {}).get("id")
         except (json.JSONDecodeError, KeyError):
             continue
+        # opencode stamps every event with the session it belongs to.
+        if ACTIVE_AGENT == "opencode":
+            if obj.get("sessionID"):
+                return obj["sessionID"]
+            continue
+        if obj.get("type") == "session_meta":
+            return obj.get("payload", {}).get("id")
     return None
 
 # ---------------------------------------------------------------------------
@@ -143,8 +350,44 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 HOME_DIR = SCRIPT_DIR.parent
 OSS_FUZZ_DIR = HOME_DIR / "oss-fuzz"
 DATA_DIR = HOME_DIR / "data"
+TRACE_DIR = DATA_DIR / "trace"
 FUZZ_HELPER = SCRIPT_DIR / "fuzz_helper.py"
 PROMPT_TEMPLATE = SCRIPT_DIR / "prompts" / "bug_transplant.md"
+SETENV_SCRIPT = SCRIPT_DIR / "setenv.sh"
+
+
+def load_setenv_defaults(*names: str) -> dict[str, str]:
+    """Fill missing environment variables from ``script/setenv.sh``.
+
+    The launchers read ``$TESTCASES``, ``$REPO_PATH`` and ``$BUGINFO_PATH``
+    from the environment, but those are lost whenever the command runs in a
+    shell that never sourced ``setenv.sh`` or when ``sudo`` resets the
+    environment. Rather than fail with "Testcases dir not set", parse the
+    ``export NAME="value"`` lines of ``setenv.sh`` and use them as defaults
+    for whichever of *names* is unset. Existing environment values win.
+
+    Returns the variables that were filled in, for logging.
+    """
+    if not SETENV_SCRIPT.exists():
+        return {}
+    wanted = set(names)
+    filled: dict[str, str] = {}
+    pattern = re.compile(r'^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*?)\s*$')
+    for line in SETENV_SCRIPT.read_text().splitlines():
+        m = pattern.match(line)
+        if not m:
+            continue
+        name, raw = m.group(1), m.group(2)
+        if name not in wanted or os.environ.get(name):
+            continue
+        value = raw.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        value = os.path.expandvars(os.path.expanduser(value))
+        if value:
+            os.environ[name] = value
+            filled[name] = value
+    return filled
 MINIMIZE_TEMPLATE = SCRIPT_DIR / "prompts" / "minimize_patch.md"
 MEMORY_TEMPLATE = SCRIPT_DIR / "prompts" / "bug_transplant_memory.md"
 
@@ -313,9 +556,10 @@ def collect_crash_data(args: argparse.Namespace) -> bool:
 def collect_trace_data(args: argparse.Namespace) -> bool:
     """Run fuzz_helper.py collect_trace to get the function trace."""
     trace_file = (
-        DATA_DIR
+        TRACE_DIR
         / f"target_trace-{args.buggy_commit[:8]}-{args.testcase}.txt"
     )
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
     if trace_file.exists():
         logger.info("Trace data already exists: %s", trace_file)
         return True
@@ -652,6 +896,39 @@ def build_prompt(args: argparse.Namespace) -> str:
     return prompt
 
 
+def _write_minimize_delta(output_dir: Path, premin_path: Path,
+                          final_path: Path, minimized_kept: bool) -> Path:
+    """Write a unified diff of the pre- vs post-minimization patches.
+
+    The result shows what the minimize agent stripped out (or added back).
+    ``minimized_kept`` is False when post-minimize verification failed and
+    the pre-minimize patch was restored -- the delta is then empty by
+    construction, and we say so in the header.
+    """
+    import difflib
+
+    premin = premin_path.read_text() if premin_path.exists() else ""
+    final = final_path.read_text() if final_path.exists() else ""
+    delta_path = output_dir / "minimize_delta.diff"
+    body = "".join(difflib.unified_diff(
+        premin.splitlines(keepends=True),
+        final.splitlines(keepends=True),
+        fromfile="bug_transplant_premin.diff",
+        tofile="bug_transplant.diff",
+    ))
+    header = (
+        f"# pre-minimize patch: {len(premin)} bytes\n"
+        f"# final patch:        {len(final)} bytes\n"
+        f"# minimized patch kept: {minimized_kept}\n"
+    )
+    if not body:
+        header += "# (no difference: minimization changed nothing)\n"
+    delta_path.write_text(header + body)
+    logger.info("Minimize delta saved: %s (%d -> %d bytes)",
+                delta_path, len(premin), len(final))
+    return delta_path
+
+
 def _build_minimize_prompt(args: argparse.Namespace) -> str:
     """Read the minimize prompt template and fill in parameters."""
     template = MINIMIZE_TEMPLATE.read_text()
@@ -752,9 +1029,12 @@ def create_shared_container(
         docker_run_cmd += ["-e", env_var]
 
     # Mount codex credentials
-    cred_dir = Path.home() / CODEX_CONFIG["credentials_dir"]
+    cred_dir = codex_cred_dir()
     if cred_dir.exists():
         docker_run_cmd += ["-v", f"{cred_dir}:/tmp/.agent-creds-src:ro"]
+    for env_var in codex_api_key_env():
+        docker_run_cmd += ["-e", env_var]
+    docker_run_cmd += agent_mounts()
 
     if env:
         for e in env:
@@ -883,9 +1163,12 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             docker_run_cmd += ["-e", env_var]
 
         # Mount codex credentials (login mode)
-        cred_dir = Path.home() / CODEX_CONFIG["credentials_dir"]
+        cred_dir = codex_cred_dir()
         if cred_dir.exists():
             docker_run_cmd += ["-v", f"{cred_dir}:/tmp/.agent-creds-src:ro"]
+        for env_var in codex_api_key_env():
+            docker_run_cmd += ["-e", env_var]
+        docker_run_cmd += agent_mounts()
 
         # Additional user-specified env vars
         if args.env:
@@ -1093,7 +1376,14 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
         # check that the bug actually triggers.  The agent may have used
         # a non-standard build that produces different binaries.
         # ---------------------------------------------------------------
-        if exit_code == 0:
+        if exit_code == 0 or (getattr(args, "skip_verify", False)
+                              and has_source_diff):
+            if exit_code != 0:
+                logger.warning(
+                    "Agent exited %d but --skip-verify is set and a source "
+                    "diff exists -- continuing to minimization anyway",
+                    exit_code,
+                )
             logger.info("=== Post-agent verification ===")
             fuzzer = args.fuzzer_name
             testcase = args.testcase
@@ -1135,11 +1425,16 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             crash_log = (
                 str(original_crash_file) if original_crash_file.exists() else None
             )
-            trigger_ok = verify_bug_triggers(
-                container_name, args.bug_id, fuzzer, testcase,
-                sanitizer="address", crash_log=crash_log,
-                fuzzer_path=f"/out/{fuzzer}",
-            )
+            if getattr(args, "skip_verify", False):
+                logger.info("Post-agent verification SKIPPED (--skip-verify): "
+                            "treating the transplant as successful")
+                trigger_ok = True
+            else:
+                trigger_ok = verify_bug_triggers(
+                    container_name, args.bug_id, fuzzer, testcase,
+                    sanitizer="address", crash_log=crash_log,
+                    fuzzer_path=f"/out/{fuzzer}",
+                )
             # Capture a fresh fuzzer output so the saved crash log reflects
             # what the verifier just saw (and so the post-minimize diff
             # step has a reference text for stack-matching).
@@ -1176,6 +1471,16 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
 
                 # --- Phase 2: Minimization (resume transplant session) ---
                 logger.info("=== Minimization phase ===")
+                # Snapshot the verified, not-yet-minimized patch so the
+                # minimizer's effect can be inspected afterwards.
+                premin_path = output_dir / "bug_transplant_premin.diff"
+                _, premin_diff = _exec_capture(
+                    container_name,
+                    _container_in_dir(repo_dir, f"git diff HEAD -- . {_git_diff_excludes}"),
+                )
+                premin_path.write_text(premin_diff)
+                logger.info("Pre-minimize diff saved: %s (%d bytes)",
+                            premin_path, len(premin_diff))
                 minimize_prompt = _build_minimize_prompt(args)
                 # Resume the transplant session so the agent keeps
                 # build-environment context (workarounds, paths, etc.)
@@ -1256,11 +1561,16 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                     f"if [ -f /out/{testcase} ]; then cp /out/{testcase} /work/{testcase}; "
                     f"elif [ ! -f /work/{testcase} ]; then cp /corpus/{testcase} /work/{testcase}; fi; true",
                 )
-                post_min_ok = verify_bug_triggers(
-                    container_name, args.bug_id, fuzzer, testcase,
-                    sanitizer="address", crash_log=crash_log,
-                    fuzzer_path=f"/out/{fuzzer}",
-                )
+                if getattr(args, "skip_verify", False):
+                    logger.info("Post-minimize verification SKIPPED "
+                                "(--skip-verify): keeping the minimized diff")
+                    post_min_ok = True
+                else:
+                    post_min_ok = verify_bug_triggers(
+                        container_name, args.bug_id, fuzzer, testcase,
+                        sanitizer="address", crash_log=crash_log,
+                        fuzzer_path=f"/out/{fuzzer}",
+                    )
                 if post_min_ok:
                     logger.info("Post-minimize verification PASSED")
                     _, fuzz_out2 = _exec_capture(
@@ -1279,6 +1589,11 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                         container_name,
                         _container_in_dir(repo_dir, "git diff"))
                     diff_path.write_text(pre_min_diff)
+
+                # What the minimizer actually removed/changed: a diff of the
+                # two patches (pre-minimize vs. the diff we ended up keeping).
+                _write_minimize_delta(
+                    output_dir, premin_path, diff_path, minimized_kept=post_min_ok)
             else:
                 logger.error(
                     "Post-agent verification FAILED: bug does NOT trigger "
@@ -1353,6 +1668,16 @@ def _format_codex_output(jsonl_output: str) -> str:
         try:
             ev = _json.loads(raw)
         except _json.JSONDecodeError:
+            continue
+        if ACTIVE_AGENT == "opencode":
+            # opencode emits one event per message part; `text` parts carry
+            # what the agent said, the rest are tool calls and step markers.
+            if ev.get("type") == "text":
+                text = (ev.get("part") or {}).get("text", "")
+                if text:
+                    lines.append(f"\n{'='*60}")
+                    lines.append("AGENT:")
+                    lines.append(text)
             continue
         if ev.get("type") != "item.completed":
             continue
@@ -1521,8 +1846,26 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Base runner image (e.g. 'auto')")
     parser.add_argument("--skip-collect", action="store_true",
                         help="Skip crash/trace collection (data already exists)")
+    # Default ON: the gate rejects any diff whose crash stack does not match
+    # the reference, which also discards diffs worth inspecting by hand. Pass
+    # --verify to put the gate back and have unmatched diffs deleted again.
+    parser.add_argument("--skip-verify", dest="skip_verify",
+                        action="store_true", default=True,
+                        help="Skip the crash-triggering verification gates "
+                             "(DEFAULT). The patch is still rebuilt with "
+                             "official `compile` and minimized, but a "
+                             "non-reproducing or agent-errored run is kept "
+                             "instead of discarded. Diffs produced this way "
+                             "are NOT confirmed to trigger the bug.")
+    parser.add_argument("--verify", dest="skip_verify", action="store_false",
+                        help="Enforce the verification gate: a diff whose "
+                             "crash stack does not match the reference is "
+                             "discarded and the bug is marked failed.")
 
     # Agent
+    parser.add_argument("--agent", choices=["codex", "opencode"],
+                        default="codex",
+                        help="Agent CLI backend (default: codex)")
     parser.add_argument("--model", default=None,
                         help="Model to use (passed to agent CLI)")
     parser.add_argument("--timeout", type=int, default=3600,
@@ -1555,8 +1898,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     global _usage_tracker
 
+    filled = load_setenv_defaults("TESTCASES", "REPO_PATH", "BUGINFO_PATH")
     parser = build_parser()
     args = parser.parse_args()
+    set_active_agent(getattr(args, "agent", "codex"))
 
     # Setup logging
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -1565,6 +1910,8 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    for name, value in filled.items():
+        logger.info("%s not in environment; using %s from %s", name, value, SETENV_SCRIPT)
 
     # Initialize codex token tracker
     from codex_usage import CodexUsageTracker
@@ -1594,7 +1941,7 @@ def main() -> int:
         logger.info("=== Phase 0: Skipped (--skip-collect) ===")
         # Verify data exists
         crash_file = DATA_DIR / "crash" / f"target_crash-{buggy_short}-{args.testcase}.txt"
-        trace_file = DATA_DIR / f"target_trace-{buggy_short}-{args.testcase}.txt"
+        trace_file = TRACE_DIR / f"target_trace-{buggy_short}-{args.testcase}.txt"
         missing = []
         if not crash_file.exists():
             missing.append(str(crash_file))

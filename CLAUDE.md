@@ -159,6 +159,25 @@ When the input format changed between commits, **patch the testcase binary** rat
 After triggering, minimize via single-change elimination (per-file, then per-hunk).
 See `data/feedback_bug_transplant.md` for the full methodology with examples.
 
+### Ungated Replay Methodology
+`script/ungated_*.py` gives each bug that is *native* at the target commit a
+switch (`__UNGATED_FIX(n)`, a **set bit applies that bug's fix**), so a campaign
+crash can be matched to a bug by switching it off rather than by stack
+signature. Verified **one bit at a time**, two masks per bug: mask 0 must crash
+with the class the campaign recorded (fidelity), and this bug's bit alone must
+remove the crash (necessity). Nothing is claimed about what other bits do to
+that PoC — with a whole benchmark's fixes live, one fix routinely shadows
+another, which says nothing about whether the switch works.
+
+When a PoC measures `no-baseline-crash`, do not conclude the bug is absent until
+`data/feedback_ungated_replay.md` is worked through, in order: the staged
+payload bytes (a testcase-only transplant lives in them), the `--runs` count
+(a stack-use-after-return needs the stack reused *within* a process), whether
+the replay harness handles the payload the way the campaign's did (an
+exactly-sized copy is what makes a one-byte overread visible to ASan), and only
+then the toolchain. `<bench>/crashes/` holds crashes captured on the campaign
+binary itself and settles whether the modern build can produce the bug at all.
+
 ### Two-Phase Agent Approach
 Each bug runs two sequential Codex agent sessions inside the same container:
 1. **Transplant agent** (`bug_transplant.md`): diagnose and apply changes to trigger the bug
@@ -199,7 +218,7 @@ The merge script builds with ASAN and UBSAN in the main container. MSAN support 
 - Per-bug: `data/bug_transplant/<project>_<bug_id>/bug_transplant.diff`
 - Batch: `data/bug_transplant/batch_<project>_<commit>/summary.json`
 - Merge: `data/bug_transplant/merge_offline_<project>_<commit>/combined.diff`
-- Traces: `data/target_trace-<commit>-<testcase>.txt`
+- Traces: `data/trace/target_trace-<commit>-<testcase>.txt`
 - Crash logs: `data/crash/target_crash-<commit>-<testcase>.txt`
 - Fix hints: `data/patch_diffs/fix_hint-<commit>-<testcase>.diff`
 - FuzzBench benchmark: `<output_dir>/<project>_transplant_<target>/` (Dockerfile, build.sh, benchmark.yaml, patches/, seeds/, monitor/, bug_metadata.json)

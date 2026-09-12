@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Two-level crash triage for bug-transplant benchmarks.
+"""Causal crash triage for bug-transplant benchmarks.
 
-Every crash from a merged FuzzBench campaign is decided by two independent
-signals, in this order:
-
-  LEVEL 1 -- causal, by rewriting the dispatch prefix and replaying.  The
-    payload is held byte-for-byte identical; only the N dispatch bytes change,
-    so the sole variable is which grafted bugs exist in the run.
+Every crash from a merged FuzzBench campaign is decided by ONE signal: the
+dispatch-bit counterfactual.  The payload is held byte-for-byte identical and
+only the N dispatch bytes change, so the sole variable is which grafted bugs
+exist in the run.
 
       mask 0 reproduces                     -> graft-independent
       mask 0 silent, bit i alone reproduces -> graft-triggered (every
@@ -15,39 +13,29 @@ signals, in this order:
       no single bit suffices, >=2 needed    -> composition-dependent
       own recorded mask does not reproduce  -> non-reproducing (excluded)
 
-  LEVEL 2 -- semantic, using the SAME matcher RQ5 uses
-    (fuzzbench_triage._match_bug_ids_in_stacktrace): a frame must hit the bug's
-    recorded crash_file AND crash_line (and crash_function when known), with
-    reference-frame overlap and sanitizer detail breaking ties.
+Crash frames are NOT examined.  An earlier version of this script carried a
+second, semantic level that matched the replayed stack against each bug's
+recorded crash_file/crash_line; it was removed 2026-08-19 (user decision) and
+with it every claim of the form "this crash IS historical bug B".  What the
+script produces now is strictly causal: which graft the crash requires.
 
-    RQ3's classifier is deliberately NOT used here.  It exists to compare a
-    bug's own PoC across two builds, where the stacks should coincide and a
-    loose tier merely tolerates drift.  Applied to an arbitrary fuzzer-found
-    crash its "same sanitizer class + any shared function or file" tier is
-    near-vacuous: every libavc crash traverses LLVMFuzzerTestOneInput ->
-    isvcd_api_function -> isvcd_video_decode, so unrelated heap-buffer-overflows
-    matched each other on entry-path frames alone.
-
-A bug is credited only when BOTH agree.  Level 1 alone cannot: a crash may
-depend on graft i and still not BE historical bug i (libavc i35 crashes
-identically under either of two bugs, at a site belonging to neither).  Level 2
-alone cannot either: it is a stack comparison, and a native crash can share a
-signature with a grafted bug.
-
-Note on `graft-independent`: it does NOT mean "not ours".  231 of the 355
-transplanted bugs are always-active (`dispatch_value == 0`) and have no bit to
-switch, so a crash from one reproduces at mask 0 exactly like a pre-existing
-target bug.  Level 2 is the only instrument that separates them, which is why
-those crashes are matched too.
+Consequences to keep in mind when reading the output:
+  * Only the gated bugs can be attributed at all.  A bug with
+    `dispatch_value == 0` has no bit to switch, so its crashes land in
+    `graft-independent` and are indistinguishable from a pre-existing target
+    bug.  `graft-independent` therefore means "no graft is necessary", never
+    "not ours".
+  * `candidates` names the grafts the crash requires, not the bug it is.  A
+    crash can depend on graft i and still be a different fault that graft i
+    merely made reachable.
 
 Replay details that matter:
   * Replays the COVERAGE build, not the fuzzing binary, inside `base-runner`.
     The fuzzing binary carries no line table -- every symbolizer returns
     `??:0:0` for it -- while the coverage build has full DWARF and still
     honours the dispatch prefix and ASan.  That yields native
-    `#N 0x.. in <func> /src/path:line:col` frames, exactly the form
-    fuzzbench_triage parses, so our replays are directly comparable with the
-    campaign's own stacks and with the reference logs.
+    `#N 0x.. in <func> /src/path:line:col` frames, so a replay log is
+    readable when a case needs looking at by hand.
   * Every mask is retried until it crashes or the retry budget is spent.
     Crashes here are flaky: a libavc PoC reproduced 1 in 5 runs, so a single
     attempt is not evidence of absence.
@@ -72,55 +60,50 @@ import json
 import re
 import sqlite3
 import subprocess
-import sys
 import tarfile
 from collections import defaultdict
 from glob import glob
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fuzzbench_triage import (  # noqa: E402
-    load_bug_metadata, _bug_targets_from_metadata,
-    _match_bug_ids_in_stacktrace)
-
 BASE_RUNNER = "gcr.io/oss-fuzz-base/base-runner"
+
+# UBSan is NOT part of this paper's oracle: no claim rests on undefined
+# behaviour, the replays run with halt_on_error=0 so a UB report is not a
+# crash, and a UBSan-typed campaign row can therefore never be reproduced or
+# attributed.  Such rows are DROPPED at the source rather than carried through
+# as `non-reproducing`, which is what made htslib look 47% unreproducible.
+UBSAN_TYPES = ("Undefined-shift", "Integer-overflow", "Index-out-of-bounds",
+               "Float-cast", "Divide-by-zero", "Invalid-bool",
+               "Misaligned-address", "Object-size", "Non-positive-vla",
+               "Pointer-overflow", "Invalid-shift")
+
+
+def is_ubsan(crash_key):
+    return (crash_key or "").startswith(UBSAN_TYPES)
+
+
+# The sanitizer configuration FuzzBench's measurer used when it recorded these
+# crashes (fuzzbench/common/sanitizer.py).  Replaying with anything else is
+# replaying a different program: `detect_stack_use_after_return=1` moves locals
+# to a fake stack, and on c-blosc2 it is the difference between the recorded
+# crash and silence -- 8 of 8 sampled `non-reproducing` classes reproduce with
+# it and none without.  Keep this in step with the measurer.
+MEASURER_ASAN = ":".join([
+    "alloc_dealloc_mismatch=0", "allocator_may_return_null=1",
+    "allocator_release_to_os_interval_ms=500", "allow_user_segv_handler=0",
+    "check_malloc_usable_size=0", "detect_leaks=0", "detect_odr_violation=0",
+    "detect_stack_use_after_return=1", "fast_unwind_on_fatal=0",
+    "handle_abort=2", "handle_sigbus=2", "handle_sigfpe=2", "handle_segv=2",
+    "handle_sigill=2", "max_uar_stack_size_log=16", "quarantine_size_mb=64",
+    "strict_memcmp=1", "symbolize=1", "symbolize_inline_frames=0",
+])
+# UBSan stays non-fatal: UBSan is not part of this paper's oracle and its
+# crash types are filtered out entirely (is_ubsan).
+MEASURER_UBSAN = "print_stacktrace=0:halt_on_error=0"
 
 _FRAME_HEAD = re.compile(r"^\s*#(\d+)\s+0x[0-9a-f]+\s+in\s+(.*)$")
 
 
-def parse_frames_all(text):
-    """(function, file, line) for EVERY frame, including ones with no line.
-
-    fuzzbench_triage.parse_stacktrace_frames requires `/src/...:<line>` and
-    silently drops anything else.  Some translation units are built without
-    usable line info -- libavc's ih264d_inter_pred.c and ih264d_process_pslice.c
-    among them -- so their frames vanish and the next frame down is mistaken for
-    the fault site.  On libavc that hid a NULL dereference in
-    ih264d_motion_compensate_mp behind three different callers and split one
-    fault across three "kinds".
-
-    `line` is "" when unknown.  That still cannot satisfy RQ5's matcher, which
-    keys on crash_file + crash_line -- a bug whose crash site lies in a
-    no-line-info unit is unmatchable by that rule either way.  What this fixes
-    is knowing WHERE a crash actually faulted.
-    """
-    out = []
-    for raw in (text or "").splitlines():
-        m = _FRAME_HEAD.match(raw)
-        if not m:
-            continue
-        rest = m.group(2).strip()
-        func, path, line = rest, "", ""
-        if " /" in rest:
-            func, _, tail = rest.rpartition(" /")
-            tail = "/" + tail
-            loc = re.match(r"(/\S+?):(\d+)", tail)
-            if loc:
-                path, line = loc.group(1), loc.group(2)
-            else:
-                path = tail.split()[0].rstrip(")")
-        out.append((func.strip(), path, line))
-    return out
 FRAME_RE = re.compile(r"^\s*#(\d+)\s+0x([0-9a-f]+)\s+in\s+(\S+)")
 
 # Cheap first: one execution, and only escalate to -runs=N when that fails to
@@ -269,7 +252,31 @@ def mask_prefix(mask, nbytes):
     return bytes((mask >> (8 * i)) & 0xFF for i in range(nbytes))
 
 
-def run_masks(image_out, target, vdir, names, tries, runs, tmo=240):
+def pin_image(ref):
+    """Resolve an image reference to its immutable id.
+
+    A tag moves.  `base-runner:latest` and the locally built
+    `runners/libfuzzer/<benchmark>:latest` are both rebuilt in place, so a run
+    that records only the tag cannot say afterwards which environment produced
+    its verdicts -- and a rebuild mid-sweep would silently change it.  Resolve
+    once, run every container on the id, and write the id into the run
+    metadata.
+    """
+    p = subprocess.run(["docker", "image", "inspect", "-f",
+                        "{{.Id}}{{if .RepoDigests}}\t"
+                        "{{index .RepoDigests 0}}{{end}}", ref],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        raise SystemExit(f"replay image not present locally: {ref}\n"
+                         f"build it first -- a floating tag is not a fallback")
+    out = p.stdout.strip().split("\t")
+    image_id = out[0]
+    digest = out[1] if len(out) > 1 else ""   # locally built images have none
+    return image_id, digest
+
+
+def run_masks(image_out, target, vdir, names, tries, runs, tmo=240,
+              runner=BASE_RUNNER):
     """Replay `names` in one container.
 
     tmo is deliberately generous.  With several containers running at once each
@@ -280,13 +287,19 @@ def run_masks(image_out, target, vdir, names, tries, runs, tmo=240):
     """
     lst = vdir.parent / f"probe_list_{vdir.name}.txt"
     lst.write_text("\n".join(names) + "\n")
+    # image_out=None replays the image's OWN /out -- the fuzzing binary the
+    # campaign ran.  The coverage build was chosen when RQ5's matcher needed
+    # crash_line; frame matching was removed 2026-08-19, and the coverage build
+    # does not reproduce every crash the fuzzing build does (c-blosc2: 8 of 8
+    # sampled ASan classes reproduce on the fuzzing binary, none on coverage).
     cmd = ["docker", "run", "--rm", "--privileged", "--shm-size=2g",
-           "-v", f"{image_out}:/out", "-v", f"{vdir}:/inputs:ro",
+           *(["-v", f"{image_out}:/out"] if image_out else []),
+           "-v", f"{vdir}:/inputs:ro",
            "-v", f"{lst}:/list:ro",
            "-e", "ASAN_SYMBOLIZER_PATH=/usr/local/bin/llvm-symbolizer",
-           "-e", "ASAN_OPTIONS=detect_leaks=0",
-           "-e", "UBSAN_OPTIONS=print_stacktrace=0:halt_on_error=0",
-           "--entrypoint", "bash", BASE_RUNNER, "-c",
+           "-e", f"ASAN_OPTIONS={MEASURER_ASAN}",
+           "-e", f"UBSAN_OPTIONS={MEASURER_UBSAN}",
+           "--entrypoint", "bash", runner, "-c",
            PROBE.format(target=target, tries=tries, runs=runs, tmo=tmo)]
     r = subprocess.run(cmd, capture_output=True, timeout=14400)
     if r.returncode != 0:
@@ -329,7 +342,14 @@ def main():
     ap.add_argument("--db", required=True)
     ap.add_argument("--experiment", default=None)
     ap.add_argument("--folders", required=True)
-    ap.add_argument("--runner-image", required=True)
+    ap.add_argument("--runner-image", required=True,
+                    help="image the replays run in.  Use the campaign's own "
+                         "runner image (gcr.io/fuzzbench/runners/libfuzzer/"
+                         "<benchmark>:latest) so the replay environment is the "
+                         "one the crashes were found in; it is built on the "
+                         "base-builder digest the benchmark Dockerfile pins.  "
+                         f"Falls back to {BASE_RUNNER} only if you pass it "
+                         "explicitly.")
     ap.add_argument("--target", required=True)
     ap.add_argument("--cov-tar", required=True)
     ap.add_argument("--workdir", required=True)
@@ -346,6 +366,12 @@ def main():
     ap.add_argument("--chunk", type=int, default=200,
                     help="inputs per container call in the mask-0 phase")
     a = ap.parse_args()
+
+    # Pin the replay environment before anything runs: every container below
+    # uses the resolved id, not the tag it came from.
+    runner_id, runner_digest = pin_image(a.runner_image)
+    print(f"replay image: {a.runner_image} -> {runner_id}"
+          f"{' (' + runner_digest + ')' if runner_digest else ''}", flush=True)
 
     bench = Path(a.benchmark_dir)
     work = Path(a.workdir) / a.name
@@ -367,11 +393,6 @@ def main():
     if not (out_dir / a.target).is_file():
         raise SystemExit(f"coverage build has no /{a.target}: {out_dir}")
     print(f"  coverage build extracted -> {out_dir/a.target}", flush=True)
-
-    bug_meta = load_bug_metadata(bench / "bug_metadata.json")
-    targets = _bug_targets_from_metadata(bug_meta)
-    print(f"  {len(targets)} bugs have crash_file/crash_line for matching",
-          flush=True)
 
     raw = work / "raw"
     raw.mkdir(parents=True, exist_ok=True)
@@ -411,21 +432,13 @@ def main():
     print(f"  masks per class: 0, each of the {len(used)} single bits, and the "
           f"recorded mask", flush=True)
 
-    refs = {}
-    for bug in list(bits) + always:
-        f = bench / "crashes" / f"{bug}.txt"
-        if f.is_file():
-            refs[bug] = f.read_text(errors="replace")
-
     # Append each verdict as it completes.  The whole-file write at the end
     # meant a timeout kill lost every replay done so far -- gstoraster lost
     # 3+ hours that way.
     dest = Path(a.out) / f"{a.name}_two_level.csv"
     FIELDS = ["benchmark", "crash_key", "canon_mask", "class_crashes",
               "testcase", "fuzzer", "trial", "time", "level1", "candidates",
-              "recorded_mask", "repro_masks", "masks_tested", "level2",
-              "matched_bug", "credited_bug", "matched_is_candidate",
-              "sanitizer"]
+              "recorded_mask", "repro_masks", "masks_tested", "sanitizer"]
     fh_out = open(dest, "w", newline="")
     wr_out = csv.DictWriter(fh_out, fieldnames=FIELDS)
     wr_out.writeheader()
@@ -456,7 +469,8 @@ def main():
             nm = f"z{i + j}"
             (wd / nm).write_bytes(mask_prefix(0, nbytes) + payload)
             names.append(nm)
-        res = run_masks(out_dir, a.target, wd, names, a.tries, a.runs)
+        res = run_masks(out_dir, a.target, wd, names, a.tries, a.runs,
+                        runner=runner_id)
         with zlock:
             for j, nm in enumerate(names):
                 zero[i + j] = res.get(nm, "")
@@ -507,7 +521,7 @@ def main():
                 for m in ms:
                     (vd / f"m{m}").write_bytes(mask_prefix(m, nbytes) + payload)
                 return run_masks(out_dir, a.target, vd, [f"m{m}" for m in ms],
-                                 a.tries, a.runs)
+                                 a.tries, a.runs, runner=runner_id)
 
             res = sweep(masks)
             res["m0"] = z
@@ -537,28 +551,6 @@ def main():
                 cands = [inv[b] for b in used if mm >> b & 1]
                 rec_text = res.get(f"m{mm}")
 
-        # LEVEL 2 -- RQ5's matcher on the replayed crash.  Matched against the
-        # WHOLE catalogue, not just the candidate grafts: a crash can require
-        # graft i and still be, semantically, another bug that graft i merely
-        # made reachable (unmasking).  Which bug matched, and whether it was a
-        # candidate, is recorded separately.
-        matched = sorted(_match_bug_ids_in_stacktrace(rec_text or "", targets))
-        if not matched:
-            best = "no-match"
-        elif not cands:
-            # No candidate set exists (graft-independent crashes have no
-            # required bits), so "matched something other than its candidate"
-            # is vacuous -- it would label every such crash match-other-bug.
-            best = "match"
-        elif set(matched) & set(cands):
-            best = "match"
-        else:
-            best = "match-other-bug"
-        best_bug = "|".join(matched)
-        in_cands = [b for b in matched if b in cands]
-        credited = "|".join(in_cands) if in_cands else (
-            best_bug if level1 == "graft-independent" else "")
-        matched_is_candidate = bool(in_cands)
         row = {
             "benchmark": a.name, "crash_key": (key or "").replace("\n", " "),
             "canon_mask": cmask, "class_crashes": nmemb,
@@ -567,21 +559,19 @@ def main():
             "recorded_mask": recorded,
             "repro_masks": " ".join(str(m) for m in sorted(crashed)),
             "masks_tested": " ".join(str(m) for m in sorted(masks)),
-            "level2": best, "matched_bug": best_bug, "credited_bug": credited,
-            "matched_is_candidate": matched_is_candidate,
             "sanitizer": sanitizer_class(rec_text or ""),
         }
         with wr_lock:
             wr_out.writerow(row)
             fh_out.flush()
             rows.append(row)
-        # Keep EVERY replay log, not just the unmatched ones: the per-case
-        # notes show the stack for matched crashes too, and re-deriving one
-        # means re-replaying the input.
+        # Keep every replay log: re-deriving one means re-replaying the input,
+        # and the per-case notes quote the stack even though no verdict is
+        # taken from it.
         with gzip.open(logs / f"{tc}.log.gz", "wt") as fh:
             fh.write(rec_text or "")
         if n % 50 == 0 or n == len(inputs):
-            print(f"  [{len(rows)}/{len(inputs)}] {level1:22s} {best}", flush=True)
+            print(f"  [{len(rows)}/{len(inputs)}] {level1}", flush=True)
 
 
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
@@ -590,15 +580,33 @@ def main():
 
     outdir = Path(a.out)
     outdir.mkdir(parents=True, exist_ok=True)
+    # How the sweep was run, next to what it found: without this the image the
+    # replays used is invisible in the output.
+    (outdir / f"{a.name}_run_metadata.json").write_text(json.dumps({
+        "benchmark": str(bench),
+        "name": a.name,
+        "db": a.db,
+        "experiment": a.experiment,
+        "folders": a.folders,
+        "cov_tar": a.cov_tar,
+        "runner_image": a.runner_image,
+        "runner_image_id": runner_id,
+        "runner_repo_digest": runner_digest,
+        "gated_bugs": len(bits),
+        "ungated_bugs": len(always),
+        "dispatch_bytes": nbytes,
+        "tries": a.tries,
+        "runs": a.runs,
+        "jobs": a.jobs,
+        "crash_rows": n_rows,
+        "classes": len(cls),
+        "classes_replayed": len(inputs),
+    }, indent=2) + "\n")
     print(f"\nwrote {dest} ({len(rows)} rows, written incrementally)")
     c1 = defaultdict(int)
-    c2 = defaultdict(int)
     for r in rows:
         c1[r["level1"]] += 1
-        if r["level1"] in ("graft-triggered", "composition-dependent"):
-            c2[r["level2"]] += 1
-    print("level 1:", dict(c1))
-    print("level 2 (graft-dependent only):", dict(c2))
+    print("verdicts:", dict(c1))
 
 
 if __name__ == "__main__":
