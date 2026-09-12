@@ -586,6 +586,14 @@ def get_parser():  # pylint: disable=too-many-statements,too-many-locals
                             help='path to store testcases')
   collect_trace_parser.add_argument('--test_input',
                             help='test_input name')
+  collect_trace_parser.add_argument('--rss-limit-mb',
+                            type=int, default=8192,
+                            help='libFuzzer -rss_limit_mb for the trace run '
+                                 '(default 8192). Without it an OOM-adjacent '
+                                 'bug dies at the allocation and the trace is '
+                                 'truncated there, which tells the agent the '
+                                 'allocation is the bug. 0 leaves the '
+                                 'default alone.')
   collect_trace_parser.add_argument('--patch',
                             help='patch file to apply in the builder')
   collect_trace_parser.add_argument('--runner-image',
@@ -623,6 +631,16 @@ def get_parser():  # pylint: disable=too-many-statements,too-many-locals
   collect_crash_parser.add_argument('--ignore-leaks',
                             action='store_true',
                             help='disable LeakSanitizer during crash collection by adding ASAN_OPTIONS=detect_leaks=0')
+  collect_crash_parser.add_argument('--rss-limit-mb',
+                            type=int, default=8192,
+                            help='libFuzzer -rss_limit_mb for crash collection '
+                                 '(default 8192). The 2048MB libFuzzer default '
+                                 'makes OOM-adjacent bugs (c-blosc2 '
+                                 'OSV-2021-464 allocates ~2.1GB in '
+                                 'init_thread_context) abort with '
+                                 'out-of-memory before the real sanitizer '
+                                 'crash fires, so the saved log records the '
+                                 'wrong crash. 0 leaves the default alone.')
   collect_crash_parser.add_argument('--detect-stack-use-after-return',
                             action='store_true',
                             help='enable ASAN_OPTIONS=detect_stack_use_after_return=1 during crash collection')
@@ -2369,7 +2387,7 @@ def get_crash_log_bash(commit:str, args, skip_compile: bool = False):
   bash_crash = f'''
     {build_phase}
     CRASH_FILE=/data/crash/target_crash-{commit[:8]}-{args.test_input}.txt;
-    FUZZER_EXTRA_ARGS="{'-detect_leaks=0' if getattr(args, 'ignore_leaks', False) else ''}";
+    FUZZER_EXTRA_ARGS="{('-detect_leaks=0 ' if getattr(args, 'ignore_leaks', False) else '') + (f'-rss_limit_mb={getattr(args, "rss_limit_mb", 0)}' if getattr(args, 'rss_limit_mb', 0) else '')}";
     SUMMARY_RE='{"SUMMARY:.*(Address|Memory|Undefined|Thread)Sanitizer" if getattr(args, "ignore_leaks", False) else "SUMMARY:.*(Address|Memory|Undefined|Thread|Leak)Sanitizer"}';
     for attempt in 1 2 3; do
       {run_cmd} &> "$CRASH_FILE";
@@ -2404,7 +2422,7 @@ def get_trace_log_bash(commit:str, args, apply_patch:bool=True):
 
     # Compile and collect trace
     compile;
-    timeout 100 /out/{args.fuzzer_name} /corpus/{args.test_input};
+    timeout 100 /out/{args.fuzzer_name} {f'-rss_limit_mb={args.rss_limit_mb}' if getattr(args, 'rss_limit_mb', 0) else ''} /corpus/{args.test_input};
     mkdir -p /data/trace;
     python3 /script/symbolizer.py -b /out/{args.fuzzer_name} -o /data/trace/target_trace-{commit[:8]}-{args.test_input}{args.patch.split('/')[-1].split('.diff')[0] if args.patch and apply_patch else ''}.txt --source_path {workdir} /tmp/trace.txt;
   '''

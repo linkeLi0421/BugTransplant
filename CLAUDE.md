@@ -200,7 +200,7 @@ The evaluation pipeline generates FuzzBench-compatible benchmark directories fro
 - **Library source fix**: `build.sh` auto-detects new `.c` files from `combined.diff` (e.g., `zfp_getcell.c`) and adds them to the library's CMakeLists.txt.
 
 ### Sanitizer Builds
-The merge script builds with ASAN and UBSAN in the main container. MSAN support was removed to simplify the merge flow (MSAN taints system libraries and required ephemeral containers).
+The merge script builds with ASAN only. UBSAN was dropped from the transplant benchmarks: every build path pins `SANITIZER=address`, the merge skips any bug whose OSV `sanitizer` is not `address`, and the triage code discards UBSan-typed crash classes as not part of the oracle. MSAN support was removed earlier to simplify the merge flow (MSAN taints system libraries and required ephemeral containers).
 
 ### Environment Setup
 `source script/setenv.sh` sets:

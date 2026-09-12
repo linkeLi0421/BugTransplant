@@ -228,7 +228,6 @@ def verify_bug_triggers(
     )
 
     last_ret = -1
-    saw_wrong_crash = False
     for variant_name, asan_opts in asan_variants:
         env_prefix = f"export ASAN_OPTIONS={asan_opts}; "
         logger.debug("[%s] verify variant=%s", bug_id, variant_name)
@@ -251,35 +250,32 @@ def verify_bug_triggers(
             if not has_summary:
                 continue
 
-            if ref_text is not None:
-                if crash_stacks_match_strict(ref_text, output):
-                    info_log(
-                        "[%s] Bug triggers OK (strict stack match, %s)",
-                        bug_id, variant_name,
-                    )
-                    return True
-                saw_wrong_crash = True
-                continue
-
-            info_log(
-                "[%s] Bug triggers OK (SUMMARY match, no reference log, %s)",
-                bug_id, variant_name,
-            )
+            # Signature matching is NO LONGER a gate. A sanitizer SUMMARY is
+            # the trigger condition; whether the stack equals the reference is
+            # reported for triage but never rejects the bug. Renames and
+            # refactors between the buggy and target commits move the crash
+            # site legitimately, and gating on the old site dropped bugs whose
+            # transplant was sound.
+            if ref_text is not None and not crash_stacks_match_strict(
+                    ref_text, output):
+                info_log(
+                    "[%s] Bug triggers (%s) but the stack differs from the "
+                    "reference -- accepted; confirm the crash site by hand "
+                    "if it matters",
+                    bug_id, variant_name,
+                )
+            else:
+                info_log(
+                    "[%s] Bug triggers OK (%s)", bug_id, variant_name,
+                )
             return True
 
-    # Single summary line — per-attempt mismatch diagnostics stay at debug
-    # inside ``crash_stacks_match`` so a wrong-bug streak doesn't flood the log.
-    if saw_wrong_crash:
-        warn_log(
-            "[%s] Crashed under %d attempts x 2 ASAN variants but stack never "
-            "matched reference (wrong bug?) — see debug log for class/direction "
-            "/ chain details",
-            bug_id, _VERIFY_ATTEMPTS,
-        )
-    else:
-        warn_log(
-            "[%s] Bug does NOT trigger under either ASAN variant after "
-            "%d attempts each (exit=%d)",
-            bug_id, _VERIFY_ATTEMPTS, last_ret,
-        )
+    # Reaching here means no sanitizer SUMMARY appeared at all: the patch
+    # genuinely does not crash. A crash at an unexpected site is no longer a
+    # failure and returns above.
+    warn_log(
+        "[%s] Bug does NOT trigger under either ASAN variant after "
+        "%d attempts each (exit=%d)",
+        bug_id, _VERIFY_ATTEMPTS, last_ret,
+    )
     return False

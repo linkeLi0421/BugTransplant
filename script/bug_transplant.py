@@ -105,6 +105,16 @@ def set_active_agent(agent: str) -> None:
     ACTIVE_AGENT = agent
 
 
+def active_agent() -> str:
+    """Name of the agent CLI in use, for log messages.
+
+    A function, not a module constant: callers import this once but the value
+    is chosen per run from --agent, so binding the name at import time would
+    always report the default.
+    """
+    return ACTIVE_AGENT
+
+
 def opencode_host_binary() -> Path | None:
     """The opencode executable on the host, or None when not installed."""
     candidate = _host_home() / ".opencode" / "bin" / "opencode"
@@ -198,6 +208,9 @@ def codex_cred_dir() -> Path:
     was used is the docker command line.
     """
     cred_dir = _host_home() / CODEX_CONFIG["credentials_dir"]
+    if ACTIVE_AGENT != "codex":
+        # opencode carries its own credentials; this path is codex-only.
+        return cred_dir
     if (cred_dir / "auth.json").exists():
         logger.info("Codex credentials: %s", cred_dir)
     else:
@@ -774,7 +787,8 @@ def build_agent_image(project: str, project_image: str) -> str:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
-    logger.info("Building codex agent image '%s' on top of '%s'...", tag, project_image)
+    logger.info("Building %s agent image '%s' on top of '%s'...",
+                ACTIVE_AGENT, tag, project_image)
 
     dockerfile_content = textwrap.dedent(f"""\
         # Stage 1: Install agent CLI on a modern base (glibc >= 2.28).
@@ -842,10 +856,10 @@ def build_agent_image(project: str, project_image: str) -> str:
             label="build_agent_image",
         )
         if ret != 0:
-            logger.error("Failed to build codex agent image")
+            logger.error("Failed to build %s agent image", ACTIVE_AGENT)
             sys.exit(1)
 
-    logger.info("Codex agent image built: %s", tag)
+    logger.info("%s agent image built: %s", ACTIVE_AGENT, tag)
     return tag
 
 
@@ -1257,8 +1271,8 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
 
         # --- Run agent ---
         codex_mode = getattr(args, "codex_mode", "exec")
-        logger.info("Running codex agent (mode=%s, this may take a while)...",
-                     codex_mode)
+        logger.info("Running %s agent (mode=%s, this may take a while)...",
+                     ACTIVE_AGENT, codex_mode)
         agent_cmd = build_codex_command(
             prompt, getattr(args, "model", None), mode=codex_mode,
         )
@@ -1279,8 +1293,8 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             _usage_tracker.log_usage("transplant", output, getattr(args, "model", None))
 
         logger.info(
-            "Codex agent finished in %.0fs (exit code %d)",
-            elapsed, exit_code,
+            "%s agent finished in %.0fs (exit code %d)",
+            ACTIVE_AGENT, elapsed, exit_code,
         )
 
         # --- Save output ---
@@ -1978,7 +1992,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Phase 2+3: Run Codex in container
     # ------------------------------------------------------------------
-    logger.info("=== Phase 2+3: Running Codex in container ===")
+    logger.info("=== Phase 2+3: Running %s in container ===", ACTIVE_AGENT)
     exit_code = run_agent_in_container(args)
 
     # ------------------------------------------------------------------

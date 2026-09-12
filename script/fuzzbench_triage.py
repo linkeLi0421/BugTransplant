@@ -313,28 +313,42 @@ def load_snapshot_times_by_trial(db_path: Path | None) -> dict[str, list[int]]:
 def dispatch_bytes_to_bug_ids(dispatch_bytes_data: bytes, bug_metadata: dict) -> list:
     """Decode dispatch bytes from a crash input to determine which bugs are active.
 
-    The dispatch mechanism uses N bytes where each bit corresponds to a bug.
-    Bit 0 of byte 0 = bug with dispatch_value 1
-    Bit 1 of byte 0 = bug with dispatch_value 2
-    Bit 0 of byte 1 = bug with dispatch_value 256
-    etc.
+    Dispatch is exclusive: the N prefix bytes are one little-endian selector,
+    and dividing it by the slice width picks exactly one slot. At most one
+    gated bug can be active, so a crashing input is never ambiguous between
+    several bugs the way it was under the old bitmask.
+
+    Local and testcase-only bugs sit in slot 0 (no gating) and are native at
+    the target commit, so they are reachable whatever the selector says and
+    are always included.
     """
     n_dispatch = bug_metadata["dispatch_bytes"]
     if len(dispatch_bytes_data) < n_dispatch:
         return []
 
-    # Reconstruct the dispatch value as a single integer
-    dispatch_value = 0
+    selector = 0
     for i in range(n_dispatch):
-        dispatch_value |= dispatch_bytes_data[i] << (8 * i)
+        selector |= dispatch_bytes_data[i] << (8 * i)
+
+    slots = bug_metadata.get("dispatch_slots")
+    dslice = bug_metadata.get("dispatch_slice")
+    if not slots or not dslice:
+        # Pre-exclusive-dispatch metadata: cannot be decoded by this scheme.
+        raise ValueError(
+            "bug_metadata lacks dispatch_slots/dispatch_slice -- it was "
+            "produced by the old bitmask dispatch and must be regenerated"
+        )
+
+    slot = selector // dslice
+    if slot >= slots:
+        slot = 0  # tail values above slots*slice mean "no bug", as in the header
 
     triggered_bugs = []
     for bug_id, info in bug_metadata["bugs"].items():
         bv = info["dispatch_value"]
         if bv == 0:
-            # Local bugs (dispatch_value=0) are always active
             triggered_bugs.append(bug_id)
-        elif dispatch_value & bv:
+        elif bv // dslice == slot:
             triggered_bugs.append(bug_id)
 
     return triggered_bugs

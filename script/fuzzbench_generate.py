@@ -404,8 +404,23 @@ def get_pinned_builder_digest(dockerfile_content: str) -> str | None:
     return None
 
 
+def _seed_dispatch_values(dispatch_bytes: int, dispatch_slots: int,
+                          dispatch_slice: int) -> list[int]:
+    """Selector values worth seeding: slot 0 plus the middle of each bug slice.
+
+    Dispatch is exclusive, so there is no point seeding bit combinations --
+    only one slot can be live per run. The midpoint matches what the merge
+    writes into each bug's PoC.
+    """
+    values = [0]
+    for slot in range(1, max(1, dispatch_slots)):
+        values.append(slot * dispatch_slice + dispatch_slice // 2)
+    return values
+
+
 def generate_build_sh(project: str, target_commit: str, fuzz_target: str,
                       oss_fuzz_dir: Path, dispatch_bytes: int,
+                      dispatch_slots: int, dispatch_slice: int,
                       merge_dir: Path = None,
                       project_repo_name: str | None = None) -> str:
     """Generate build.sh that checks out the target commit, applies patches, and builds."""
@@ -434,8 +449,11 @@ def generate_build_sh(project: str, target_commit: str, fuzz_target: str,
 
     # Modify seed corpus lines to prepend dispatch bytes
     # Replace direct zip commands that package seeds
+    # One seed variant per exclusive slot: slot 0 (no bug) plus the middle of
+    # each bug's slice, matching what assign_dispatch_bits writes into PoCs.
     dispatch_prefixes = []
-    for dispatch_value in [0] + [1 << i for i in range(dispatch_bytes * 8)]:
+    for dispatch_value in _seed_dispatch_values(dispatch_bytes, dispatch_slots,
+                                                dispatch_slice):
         prefix = dispatch_value.to_bytes(dispatch_bytes, "little")
         dispatch_prefixes.append(
             "'" + "".join(r"\x" + f"{byte:02x}" for byte in prefix) + "'"
@@ -853,6 +871,8 @@ def collect_crash_lines_from_image(bench_dir: Path, summary: dict,
     """
     image_tag = f"crash-line-collector:{summary['project']}"
     dispatch_bytes = summary["dispatch_state"]["dispatch_bytes"]
+    dispatch_slots = summary["dispatch_state"]["dispatch_slots"]
+    dispatch_slice = summary["dispatch_state"]["dispatch_slice"]
 
     # Build the image
     logger.info("Building benchmark image for crash line collection...")
@@ -977,6 +997,8 @@ def generate_bug_metadata(summary: dict, crash_lines: dict = None) -> dict:
         "project": summary["project"],
         "target_commit": summary["target_commit"],
         "dispatch_bytes": dispatch_state["dispatch_bytes"],
+        "dispatch_slots": dispatch_state["dispatch_slots"],
+        "dispatch_slice": dispatch_state["dispatch_slice"],
         "total_bugs": len(summary["results"]),
         "bugs": bugs,
     }
@@ -1055,6 +1077,8 @@ def main():
     project = summary["project"]
     target_commit = summary["target_commit"]
     dispatch_bytes = summary["dispatch_state"]["dispatch_bytes"]
+    dispatch_slots = summary["dispatch_state"]["dispatch_slots"]
+    dispatch_slice = summary["dispatch_state"]["dispatch_slice"]
     logger.info("Project: %s, commit: %s, dispatch_bytes: %d, bugs: %d",
                 project, target_commit[:8], dispatch_bytes, len(summary["results"]))
 
@@ -1112,6 +1136,7 @@ def main():
     # 7. Generate build.sh
     build_sh = generate_build_sh(project, target_commit, fuzz_target,
                                  oss_fuzz_dir, dispatch_bytes,
+                                 dispatch_slots, dispatch_slice,
                                  merge_dir=merge_dir,
                                  project_repo_name=project_repo_name)
     (bench_dir / "build.sh").write_text(build_sh)
