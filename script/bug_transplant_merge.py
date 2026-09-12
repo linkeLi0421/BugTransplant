@@ -828,10 +828,12 @@ def start_merge_container(
 
     # Codex credentials for conflict resolution (login mode)
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import CODEX_CONFIG, codex_cred_dir
+    from bug_transplant import CODEX_CONFIG, codex_cred_dir, agent_mounts
     cred_dir = codex_cred_dir()
     if cred_dir.exists():
         docker_cmd += ["-v", f"{cred_dir}:/tmp/.agent-creds-src:ro"]
+    # --agent opencode: bind-mount the standalone binary and its credentials.
+    docker_cmd += agent_mounts()
 
     api_key = os.environ.get(CODEX_CONFIG["api_key_env"], "")
     if api_key:

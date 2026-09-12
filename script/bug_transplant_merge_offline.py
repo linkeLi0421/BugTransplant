@@ -63,8 +63,11 @@ from bug_transplant_merge import (
     _prepare_container_testcases_dir,
     _save_work_testcase_to_host,
     CONTAINER_TESTCASES_DIR,
+)
+from bug_transplant import (
     SETENV_SCRIPT,
     load_setenv_defaults,
+    set_active_agent,
 )
 
 
@@ -817,7 +820,13 @@ def load_and_categorize_bugs(
         reproduce = info.get("reproduce", {})
         fuzzer = reproduce.get("fuzz_target", "")
         sanitizer = reproduce.get("sanitizer", "address").split(" ")[0]
-        if sanitizer not in ("address", "undefined"):
+        if sanitizer != "address":
+            # Every build path in the pipeline pins SANITIZER=address, and
+            # the triage code drops UBSan-typed classes as "not part of the
+            # oracle". Admitting a non-ASAN bug here only carried it into the
+            # merge to be verified against a binary that cannot report it.
+            logger.info("[%s] skipping: sanitizer=%s, merge builds ASAN only",
+                        bid, sanitizer)
             continue
         if not fuzzer:
             continue
@@ -872,7 +881,11 @@ def load_and_categorize_bugs(
         reproduce = info.get("reproduce", {})
         fuzzer = reproduce.get("fuzz_target", "")
         sanitizer = reproduce.get("sanitizer", "address").split(" ")[0]
-        if sanitizer not in ("address", "undefined") or not fuzzer:
+        if sanitizer != "address":
+            logger.info("[%s] skipping: sanitizer=%s, merge builds ASAN only",
+                        bid, sanitizer)
+            continue
+        if not fuzzer:
             continue
 
         crash_log = _find_crash_log(bid, info)
@@ -1756,6 +1769,9 @@ def main():
                              "(default: $TESTCASES, else script/setenv.sh)")
     parser.add_argument("--local-bugs", nargs="*", default=None,
                         help="Bug IDs that already trigger at target")
+    parser.add_argument("--agent", choices=["codex", "opencode"],
+                        default="codex",
+                        help="Agent CLI backend (default: codex)")
     parser.add_argument("--model", default=None,
                         help="Model override for codex")
     parser.add_argument("-v", "--volume", action="append",
@@ -1778,6 +1794,7 @@ def main():
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
+    set_active_agent(getattr(args, "agent", "codex"))
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     for name, value in filled.items():
