@@ -33,6 +33,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from two_level_triage import UBSAN_TYPES, is_ubsan  # noqa: E402
+
 logger = logging.getLogger(__name__)
 STACKTRACE_FRAME_RE = re.compile(
     r"^\s*#\d+\s+0x[0-9a-fA-F]+\s+in\s+(.+?)\s+(/src/[^:\n]+):(\d+)(?::\d+)?",
@@ -491,7 +494,8 @@ def scan_crash_dirs(experiment_dir: Path, benchmark: str,
         cur = conn.cursor()
         rows = cur.execute(
             """
-            select trial.fuzzer, trial.id, crash.time, crash.crash_stacktrace
+            select trial.fuzzer, trial.id, crash.time, crash.crash_stacktrace,
+                   crash.crash_type
             from crash
             join trial on crash.trial_id = trial.id
             where trial.benchmark = ? and trial.preempted = 0
@@ -502,13 +506,26 @@ def scan_crash_dirs(experiment_dir: Path, benchmark: str,
     finally:
         conn.close()
 
-    for fuzzer_name, trial_id, crash_time, crash_stacktrace in rows:
+    # UBSan crashes are outside this oracle.  The transplant benchmarks are
+    # ASAN-only -- every build pins SANITIZER=address and the merge skips any
+    # bug whose OSV sanitizer is not "address" -- so a UBSan finding belongs to
+    # no transplanted bug and cannot be attributed to one.  Counting them
+    # inflates the campaign's crash totals with rows that no replay can ever
+    # confirm (c-blosc2: 4,358 of them, all non-reproducing).
+    dropped_ubsan = 0
+    for fuzzer_name, trial_id, crash_time, crash_stacktrace, crash_type in rows:
+        if is_ubsan(crash_type):
+            dropped_ubsan += 1
+            continue
         matched_bug_ids = _match_bug_ids_in_stacktrace(crash_stacktrace or "", bug_targets)
         for bug_id in matched_bug_ids:
             key = (fuzzer_name, str(trial_id), bug_id)
             if key not in results or int(crash_time) < results[key]:
                 results[key] = int(crash_time)
 
+    if dropped_ubsan:
+        logger.info("Dropped %d UBSan-typed crash rows (%s): outside the "
+                    "ASAN-only oracle", dropped_ubsan, "/".join(UBSAN_TYPES[:4]))
     return results
 
 

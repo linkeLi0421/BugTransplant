@@ -2121,7 +2121,7 @@ def build_version(args):
     result = subprocess.run(['git', 'rev-parse', 'master'],
                           cwd=OSS_FUZZ_DIR,
                           capture_output=True,
-                          text=True)
+                          encoding="utf-8", errors="replace")
     oss_fuzz_commit = result.stdout.strip()
     logger.info('No CSV commit mapping, using OSS-Fuzz master: %s', oss_fuzz_commit)
 
@@ -2569,7 +2569,7 @@ def _get_oss_fuzz_commit_timestamp(oss_fuzz_commit):
   try:
     result = subprocess.run(
       ['git', 'show', '-s', '--format=%ct', oss_fuzz_commit],
-      cwd=OSS_FUZZ_DIR, capture_output=True, text=True)
+      cwd=OSS_FUZZ_DIR, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode == 0:
       return int(result.stdout.strip())
   except (ValueError, OSError) as e:

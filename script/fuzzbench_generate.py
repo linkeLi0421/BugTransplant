@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+sys.path.insert(0, str(SCRIPT_DIR))
+from bug_verify import (  # noqa: E402
+    _VERIFY_ATTEMPTS, _RUNS_PER_ATTEMPT, _RSS_LIMIT_MB,
+    _SANITIZER_SUMMARY_RE,
+)
+
 PROJECT_ROOT = SCRIPT_DIR.parent
 OSS_FUZZ_DIR = PROJECT_ROOT / "oss-fuzz"
 PROJECT_REPO_NAME_OVERRIDES = {
@@ -49,7 +57,7 @@ def commit_merge_container(container_name: str, project: str,
     logger.info("Committing container %s as image %s ...", container_name, tag)
     result = subprocess.run(
         ["docker", "commit", container_name, tag],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -229,7 +237,7 @@ def get_oss_fuzz_commit_date(oss_fuzz_dir: Path, oss_fuzz_commit: str) -> str:
     """Get ISO 8601 date string from the oss-fuzz commit."""
     result = subprocess.run(
         ["git", "show", "-s", "--format=%ci", oss_fuzz_commit],
-        cwd=oss_fuzz_dir, capture_output=True, text=True,
+        cwd=oss_fuzz_dir, capture_output=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Cannot get date for oss-fuzz commit {oss_fuzz_commit}")
@@ -243,7 +251,7 @@ def get_oss_fuzz_commit_timestamp(oss_fuzz_dir: Path, oss_fuzz_commit: str) -> i
     """Get unix timestamp of oss-fuzz commit."""
     result = subprocess.run(
         ["git", "show", "-s", "--format=%ct", oss_fuzz_commit],
-        cwd=oss_fuzz_dir, capture_output=True, text=True,
+        cwd=oss_fuzz_dir, capture_output=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Cannot get timestamp for {oss_fuzz_commit}")
@@ -281,7 +289,7 @@ def get_git_commit_date(repo_dir: Path, commit: str) -> str:
     """Get ISO 8601 date string for a commit in an arbitrary git repo."""
     result = subprocess.run(
         ["git", "show", "-s", "--format=%ci", commit],
-        cwd=repo_dir, capture_output=True, text=True,
+        cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Cannot get date for commit {commit} in {repo_dir}")
@@ -307,7 +315,7 @@ def find_project_repo_for_commit(project: str, target_commit: str,
             continue
         result = subprocess.run(
             ["git", "show", "-s", "--format=%ci", target_commit],
-            cwd=candidate, capture_output=True, text=True,
+            cwd=candidate, capture_output=True, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return candidate
@@ -353,17 +361,26 @@ def generate_dockerfile(project: str, oss_fuzz_dir: Path, builder_digest: str,
         )
 
     # Add benchmark-specific env/config before the final COPY build.sh line.
-    insert_lines = []
-    if project == "opensc":
-        insert_lines.extend([
-            "# Keep ASan stack-use-after-return detection enabled for direct testcase replay.",
-            'ENV ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1"',
-        ])
-    insert_lines.extend([
+    insert_lines = [
+        "# Keep ASan stack-use-after-return detection enabled for direct",
+        "# testcase replay; some transplanted bugs are stack-use-after-return",
+        "# and are invisible without it.",
+        'ENV ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1"',
+        "",
+        "# Raise libFuzzer's per-alloc / RSS cap from its 2048MB default. Some",
+        "# transplanted bugs (e.g. c-blosc2 OSV-2021-464) make a ~2GB malloc en",
+        "# route to the real memory-safety error; under the default cap",
+        "# libFuzzer aborts with `out-of-memory` before the bug fires.",
+        "# libFuzzer-family runners splice $ADDITIONAL_ARGS onto the target",
+        "# command line, so this propagates automatically.",
+        'ENV ADDITIONAL_ARGS="-rss_limit_mb=8192"',
+        "",
         "# Bug transplant patches",
         "COPY patches/ /src/patches/",
-        "COPY seeds/ /src/benchmark_seeds/",
-    ])
+        "# Public ClusterFuzz corpus (dispatch-zero, crash-filtered):",
+        "# the benchmark's initial seeds.",
+        "COPY corpus_seeds*.zip /src/",
+    ]
     patch_lines = "\n".join(insert_lines)
 
     # Try to insert before the COPY build.sh line
@@ -548,86 +565,40 @@ fi
 # are filtered out before packaging.
 seed_zip="$OUT/{fuzz_target}_seed_corpus.zip"
 seed_target="$OUT/{fuzz_target}"
-mkdir -p /tmp/seeds_dispatch /tmp/original_seeds /tmp/benchmark_seed_candidates
+mkdir -p /tmp/seeds_dispatch /tmp/original_seeds
 
 if [ -f "$seed_zip" ]; then
     unzip -q -o "$seed_zip" -d /tmp/original_seeds 2>/dev/null || true
     for f in /tmp/original_seeds/*; do
         [ -f "$f" ] || continue
         base=$(basename "$f")
-        for dispatch in {dispatch_prefix_list}; do
-            dispatch_name=$(printf '%s' "$dispatch" | tr -d '\\x')
-            printf '%b' "$dispatch" | cat - "$f" > "/tmp/seeds_dispatch/${{base}}.dispatch_${{dispatch_name}}"
-        done
+        # Dispatch-zero ONLY. Expanding the project corpus across every slot
+        # would hand the fuzzer inputs that already open a bug's gate, so the
+        # selector byte would not have to be discovered. Slot 0 = no bug.
+        printf '\\000' | cat - "$f" > "/tmp/seeds_dispatch/${{base}}.dispatch_00"
     done
 fi
 
-if [ -d /src/benchmark_seeds ]; then
-    for f in /src/benchmark_seeds/*; do
-        [ -f "$f" ] || continue
-        base=$(basename "$f")
-        size=$(wc -c < "$f")
-        [ "$size" -gt 0 ] || continue
+# Initial corpus: the project's public ClusterFuzz corpus, already
+# dispatch-zero prefixed (head byte 0x00 = slot 0 = no bug) and
+# crash-filtered against this benchmark. Fuzzers must mutate the selector
+# byte themselves to reach any gated bug, so no seed opens a bug's gate.
+#
+# Per-bug PoC derivatives are deliberately NOT used as seeds: truncations of
+# a reproducer hand the fuzzer most of the structure needed to rebuild it,
+# which flatters time-to-bug.
+for _z in /src/corpus_seeds*.zip; do
+    [ -f "$_z" ] || continue
+    echo "Unpacking initial corpus: $_z"
+    unzip -q -o "$_z" -d /tmp/seeds_dispatch
+done
 
-        cp "$f" "/tmp/benchmark_seed_candidates/${{base}}.exact"
-        # Zero the dispatch byte (byte 0): deactivates dispatch-gated patches
-        # while keeping the full APDU conversation and card driver routing intact.
-        cp "$f" "/tmp/benchmark_seed_candidates/${{base}}.dispatch_zero"
-        printf '\\000' | dd of="/tmp/benchmark_seed_candidates/${{base}}.dispatch_zero" bs=1 seek=0 conv=notrunc 2>/dev/null || true
-        for keep in 1 2 8 16 64 256 1024; do
-            if [ "$size" -gt "$keep" ]; then
-                head -c "$keep" "$f" > "/tmp/benchmark_seed_candidates/${{base}}.head_${{keep}}"
-            fi
-        done
-        if [ "$size" -gt 1 ]; then
-            head -c "$((size - 1))" "$f" > "/tmp/benchmark_seed_candidates/${{base}}.trim_1"
-            cp "$f" "/tmp/benchmark_seed_candidates/${{base}}.zero_last"
-            printf '\\000' | dd of="/tmp/benchmark_seed_candidates/${{base}}.zero_last" bs=1 seek="$((size - 1))" conv=notrunc 2>/dev/null || true
-            cp "$f" "/tmp/benchmark_seed_candidates/${{base}}.ff_last"
-            printf '\\377' | dd of="/tmp/benchmark_seed_candidates/${{base}}.ff_last" bs=1 seek="$((size - 1))" conv=notrunc 2>/dev/null || true
-        fi
-        if [ "$size" -gt 4 ]; then
-            mid=$((size / 2))
-            cp "$f" "/tmp/benchmark_seed_candidates/${{base}}.zero_mid"
-            printf '\\000' | dd of="/tmp/benchmark_seed_candidates/${{base}}.zero_mid" bs=1 seek="$mid" conv=notrunc 2>/dev/null || true
-            cp "$f" "/tmp/benchmark_seed_candidates/${{base}}.ff_mid"
-            printf '\\377' | dd of="/tmp/benchmark_seed_candidates/${{base}}.ff_mid" bs=1 seek="$mid" conv=notrunc 2>/dev/null || true
-        fi
-    done
-fi
-
-if [ -x "$seed_target" ] && ls /tmp/benchmark_seed_candidates/* 1>/dev/null 2>&1; then
-    for f in /tmp/benchmark_seed_candidates/*; do
-        [ -f "$f" ] || continue
-        # Never ship the exact crash reproducer as a seed.
-        case "$(basename "$f")" in
-            *.exact) continue ;;
-        esac
-        # Replay each candidate under the SAME configuration the fuzzers use at
-        # run time (ADDITIONAL_ARGS="-rss_limit_mb=8192" from the Dockerfile).
-        # Some memory errors are flaky across process invocations (heap layout /
-        # ASan redzone placement) and surface in only a fraction of runs, so a
-        # single replay can miss them and leak a crashing seed. Replay across
-        # several independent invocations and keep the candidate ONLY if it never
-        # crashes. Matching the run-time rss cap is essential: some bugs allocate
-        # >2GB before the real error, so under the default 2048MB cap libFuzzer
-        # OOM-aborts *before* crashing and the crashing seed would slip through.
-        keep=1
-        for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if ! timeout 60s env ASAN_OPTIONS="${{ASAN_OPTIONS:-detect_leaks=0:detect_stack_use_after_return=1}}:max_uar_stack_size_log=16" "$seed_target" -rss_limit_mb=8192 -runs=100 "$f" >/tmp/seed_replay.log 2>&1; then
-                keep=0
-                break
-            fi
-        done
-        if [ "$keep" = 1 ]; then
-            cp "$f" "/tmp/seeds_dispatch/poc_$(basename "$f")"
-        fi
-    done
-fi
-
-if ls /tmp/seeds_dispatch/* 1>/dev/null 2>&1; then
+# NOTE: do not use `ls /tmp/seeds_dispatch/*` here. With a large corpus the
+# glob exceeds ARG_MAX, the test silently fails, the seed zip is never
+# written, and FuzzBench starts the fuzzers from a fake 2-byte seed.
+if [ -n "$(find /tmp/seeds_dispatch -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then
     rm -f "$seed_zip"
-    zip -j -q "$seed_zip" /tmp/seeds_dispatch/*
+    find /tmp/seeds_dispatch -maxdepth 1 -type f -print0 | xargs -0 zip -j -q "$seed_zip"
 fi
 """
     return build_sh
@@ -878,7 +849,7 @@ def collect_crash_lines_from_image(bench_dir: Path, summary: dict,
     logger.info("Building benchmark image for crash line collection...")
     result = subprocess.run(
         ["docker", "build", "-t", image_tag, str(bench_dir)],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         logger.error("Docker build failed:\n%s", result.stderr[-2000:])
@@ -900,8 +871,15 @@ def collect_crash_lines_from_image(bench_dir: Path, summary: dict,
          "-e", "SRC=/src",
          "-e", "WORK=/work",
          "-e", "OUT=/out",
-         image_tag, "bash", "-lc", "sudo -E /usr/local/bin/compile"],
-        capture_output=True, text=True,
+         # The benchmark image is now based on OSS-Fuzz base-builder, which
+         # runs as root and ships no sudo. The old image came from the merge
+         # container, which had an `agent` user and a sudo wrapper, so the
+         # bare `sudo -E compile` used to work and now fails with
+         # "sudo: command not found", silently costing every crash line.
+         image_tag, "bash", "-lc",
+         "if command -v sudo >/dev/null 2>&1 && [ \"$(id -u)\" != 0 ]; then "
+         "sudo -E /usr/local/bin/compile; else /usr/local/bin/compile; fi"],
+        capture_output=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         logger.error("Compile failed:\n%s", result.stderr[-2000:])
@@ -925,35 +903,74 @@ def collect_crash_lines_from_image(bench_dir: Path, summary: dict,
     crash_output_dir = bench_dir / "crashes"
     crash_output_dir.mkdir(exist_ok=True)
 
+    staged_dir = Path(tempfile.mkdtemp(prefix="crashline_poc_"))
     for bug_id in summary["results"]:
-        # Find the PoC testcase
-        poc_name = f"testcase-{bug_id}-patched"
-        poc_path = testcases_dir / poc_name
+        # Find the PoC payload. Prefer the merge's patched copy, which some
+        # transplants rewrite (format fixes), and fall back to the original.
+        poc_path = testcases_dir / f"testcase-{bug_id}-patched"
         if not poc_path.exists():
-            poc_name = f"testcase-{bug_id}"
-            poc_path = testcases_dir / poc_name
+            poc_path = testcases_dir / f"testcase-{bug_id}"
         if not poc_path.exists():
             logger.debug("  %s: no PoC found", bug_id)
             continue
 
-        # Run the PoC - use -runs=10 so stack-use-after-return bugs
-        # have enough iterations for ASAN's fake stack to detect stale frames.
-        try:
-            result = subprocess.run(
-                ["docker", "run", "--rm",
-                 "-v", f"{poc_path.resolve()}:/tmp/testcase:ro",
-                 "-e", "ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:max_uar_stack_size_log=16",
-                 compiled_tag,
-                 f"/out/{fuzz_target}", "-runs=10", "/tmp/testcase"],
-                capture_output=True, text=True, timeout=30,
-            )
-            crash_text = result.stdout + result.stderr
-            exit_code = result.returncode
-        except subprocess.TimeoutExpired as e:
-            logger.warning("  %s: PoC replay timed out after 30s, skipping", bug_id)
-            crash_text = (e.stdout or b"").decode("utf-8", errors="replace") + \
-                         (e.stderr or b"").decode("utf-8", errors="replace")
-            exit_code = -1
+        # Build the input the same way the merge's verifier does: prepend this
+        # bug's dispatch selector explicitly rather than trusting whatever
+        # prefix happens to be on the file. Getting this wrong is silent --
+        # the run just exercises some other slot (or slot 0, "no bug") and the
+        # bug records no crash line while looking merely "unreachable".
+        selector = poc_bytes.get(bug_id, 0)
+        payload = poc_path.read_bytes()
+        if payload[:dispatch_bytes] == selector.to_bytes(dispatch_bytes, "little"):
+            blob = payload            # already carries its selector
+        else:
+            blob = selector.to_bytes(dispatch_bytes, "little") + payload
+        poc_path = staged_dir / f"testcase-{bug_id}"
+        poc_path.write_bytes(blob)
+        logger.debug("  %s: selector %d, %d bytes", bug_id, selector, len(blob))
+
+        # Replay exactly as the merge's verifier does. Every merged bug was
+        # proven to crash there, so any weaker replay here just loses crash
+        # lines: UAR-on alone can mask a heap overflow by swapping real stack
+        # frames for ASan's fake stack, these faults are flaky across process
+        # invocations, and libFuzzer's default 2048MB cap aborts an
+        # OOM-adjacent bug before its real fault. Reuse the verifier's own
+        # constants so the two cannot drift apart again.
+        crash_text, exit_code = "", 0
+        for variant, asan_opts in (
+            ("UAR-off", "detect_leaks=0"),
+            ("UAR-on",
+             "detect_leaks=0:detect_stack_use_after_return=1"
+             ":max_uar_stack_size_log=16"),
+        ):
+            for attempt in range(_VERIFY_ATTEMPTS):
+                try:
+                    result = subprocess.run(
+                        ["docker", "run", "--rm",
+                         "-v", f"{poc_path.resolve()}:/tmp/testcase:ro",
+                         "-e", f"ASAN_OPTIONS={asan_opts}",
+                         compiled_tag,
+                         f"/out/{fuzz_target}",
+                         f"-runs={_RUNS_PER_ATTEMPT}",
+                         f"-rss_limit_mb={_RSS_LIMIT_MB}",
+                         "/tmp/testcase"],
+                        capture_output=True, encoding="utf-8",
+                        errors="replace", timeout=120,
+                    )
+                    crash_text = result.stdout + result.stderr
+                    exit_code = result.returncode
+                except subprocess.TimeoutExpired as e:
+                    crash_text = (e.stdout or b"").decode("utf-8", errors="replace") + \
+                                 (e.stderr or b"").decode("utf-8", errors="replace")
+                    exit_code = -1
+                if _SANITIZER_SUMMARY_RE.search(crash_text):
+                    if variant != "UAR-off" or attempt:
+                        logger.debug("  %s: crashed on %s attempt %d",
+                                     bug_id, variant, attempt + 1)
+                    break
+            else:
+                continue
+            break
 
         # Save full crash output
         crash_file = crash_output_dir / f"{bug_id}.txt"
@@ -1095,7 +1112,7 @@ def main():
     if args.use_current_oss_fuzz_checkout:
         oss_fuzz_commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=oss_fuzz_dir, capture_output=True, text=True, check=True,
+            cwd=oss_fuzz_dir, capture_output=True, encoding="utf-8", errors="replace", check=True,
         ).stdout.strip()
         logger.info("Using current OSS-Fuzz checkout: %s", oss_fuzz_commit)
     else:
@@ -1124,13 +1141,17 @@ def main():
     bench_dir.mkdir(parents=True, exist_ok=True)
     patches_dir = bench_dir / "patches"
     patches_dir.mkdir(exist_ok=True)
-    seeds_dir = bench_dir / "seeds"
-    seeds_dir.mkdir(exist_ok=True)
 
     # 6. Generate Dockerfile
-    dockerfile = generate_dockerfile_from_container(
-        merge_image, project, project_repo_name)
-    logger.info("Generated Dockerfile from merge container image %s", merge_image)
+    # Base the benchmark on the pinned OSS-Fuzz base-builder rather than on
+    # the local merge image. A `FROM c-blosc2-merge:<sha>` base only exists on
+    # the machine that ran the merge, so the benchmark cannot be built
+    # anywhere else -- including any remote FuzzBench runner.
+    builder_digest = get_builder_digest(oss_fuzz_dir, oss_fuzz_commit)
+    dockerfile = generate_dockerfile(
+        project, oss_fuzz_dir, builder_digest, dispatch_bytes)
+    logger.info("Generated Dockerfile from base-builder@%s (oss-fuzz %s)",
+                builder_digest[:19], oss_fuzz_commit[:12])
     (bench_dir / "Dockerfile").write_text(dockerfile)
 
     # 7. Generate build.sh
@@ -1162,13 +1183,42 @@ def main():
         logger.info("Copied %d external harness source snapshot(s)",
                     copied_harness_sources)
 
-    copied_seed_candidates = copy_seed_candidates(merge_dir, seeds_dir)
-    logger.info("Copied %d seed candidate testcases", copied_seed_candidates)
+    # The Dockerfile does `COPY corpus_seeds*.zip /src/`, which is a hard
+    # build failure when no zip matches. Say so here rather than letting the
+    # user discover it from a docker build error much later.
+    if not list(bench_dir.glob("corpus_seeds*.zip")):
+        logger.warning(
+            "No corpus_seeds*.zip in %s -- the benchmark will NOT build. "
+            "Copy the project's dispatch-zero public corpus zip in before "
+            "building, e.g. from another benchmark of the same project.",
+            bench_dir,
+        )
+    else:
+        for z in bench_dir.glob("corpus_seeds*.zip"):
+            logger.info("Initial corpus: %s (%.1f MB)",
+                        z.name, z.stat().st_size / 1e6)
+
+    # PoC-derived seeds are no longer shipped. The initial corpus is the
+    # project's public ClusterFuzz corpus (dispatch-zero), so nothing consumes
+    # a seeds/ directory; copying reproducer derivatives here would only
+    # invite them being mistaken for seeds later.
 
     # 10. Collect crash lines by running PoCs against the merged binary
     summary["_merge_dir"] = str(merge_dir)
     crash_lines = collect_crash_lines_from_image(bench_dir, summary, fuzz_target)
-    logger.info("Found crash lines for %d/%d bugs", len(crash_lines), len(summary["results"]))
+    n_bugs = len(summary["results"])
+    logger.info("Found crash lines for %d/%d bugs", len(crash_lines), n_bugs)
+    if len(crash_lines) < n_bugs:
+        # Every merged bug was verified to crash in the merge container, so a
+        # bug that does not crash here means the replay and the merge disagree
+        # -- wrong selector, or an image that does not actually carry
+        # combined.diff. Both produce a benchmark whose triage data is wrong
+        # while everything still looks like it built fine.
+        logger.warning(
+            "%d/%d bugs produced NO crash line. All of them crashed during the "
+            "merge, so this points at the replay (selector or image), not at "
+            "the bugs. Triage data for this benchmark is unreliable until it "
+            "is resolved.", n_bugs - len(crash_lines), n_bugs)
 
     # 11. Generate bug metadata (with crash lines)
     bug_meta = generate_bug_metadata(summary, crash_lines)

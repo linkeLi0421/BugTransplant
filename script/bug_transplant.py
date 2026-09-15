@@ -43,6 +43,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import uuid
 import sys
 import tempfile
 import textwrap
@@ -53,7 +54,7 @@ from pathlib import Path
 # when executed directly (``python3 script/bug_transplant.py``) and when
 # imported as a library (``from bug_transplant import ...``).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bug_verify import verify_bug_triggers  # noqa: E402
+from bug_verify import verify_bug_triggers, _RSS_LIMIT_MB  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +403,39 @@ def load_setenv_defaults(*names: str) -> dict[str, str]:
             filled[name] = value
     return filled
 MINIMIZE_TEMPLATE = SCRIPT_DIR / "prompts" / "minimize_patch.md"
+
+# Set when main() starts, so the minimize phase can see how much of the
+# caller's wall-clock budget the earlier phases actually consumed.
+_RUN_START: float | None = None
+
+# Wall-clock to hold back for the post-minimize rebuild and re-verification
+# that run after the minimize agent returns.
+_POST_MINIMIZE_RESERVE_SECONDS = 420
+
+# Below this a minimize pass cannot finish anything useful, so skip it and
+# keep the verified patch rather than lose the run to the caller's kill.
+_MINIMIZE_FLOOR_SECONDS = 300
+
+
+def _minimize_budget(args: argparse.Namespace) -> int:
+    """Seconds to give the minimize agent, clamped to the time left.
+
+    Returns 0 when too little remains to be worth starting.  Without this the
+    minimizer would run against its full --minimize-timeout, overshoot the
+    caller's cap, and be SIGKILLed mid-pass -- which discards its output
+    entirely instead of falling back to the verified pre-minimize patch.
+    """
+    asked = args.minimize_timeout
+    budget = getattr(args, "total_budget", None)
+    if not budget or _RUN_START is None:
+        return asked
+    remaining = budget - (time.monotonic() - _RUN_START)
+    allowed = int(remaining - _POST_MINIMIZE_RESERVE_SECONDS)
+    if allowed >= asked:
+        return asked
+    if allowed < _MINIMIZE_FLOOR_SECONDS:
+        return 0
+    return allowed
 MEMORY_TEMPLATE = SCRIPT_DIR / "prompts" / "bug_transplant_memory.md"
 
 
@@ -718,7 +752,7 @@ def _image_workdir(image_tag: str) -> str:
     proc = subprocess.run(
         ["docker", "image", "inspect", image_tag, "--format", "{{.Config.WorkingDir}}"],
         capture_output=True,
-        text=True,
+        encoding="utf-8", errors="replace",
     )
     if proc.returncode == 0:
         workdir = proc.stdout.strip()
@@ -747,7 +781,7 @@ def build_agent_image(project: str, project_image: str) -> str:
     # image used for original crash classification.
     project_id_result = subprocess.run(
         ["docker", "image", "inspect", project_image, "--format", "{{.Id}}"],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
     )
     if project_id_result.returncode != 0:
         logger.error(
@@ -764,7 +798,7 @@ def build_agent_image(project: str, project_image: str) -> str:
          '{{index .Config.Labels "bug-transplant.base-workdir"}}|'
          '{{index .Config.Labels "bug-transplant.project-image-id"}}'],
         capture_output=True,
-        text=True,
+        encoding="utf-8", errors="replace",
     )
     if inspect.returncode == 0:
         cached_workdir, _, cached_project_id = inspect.stdout.strip().partition("|")
@@ -1203,6 +1237,11 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             return 1
     else:
         logger.info("Reusing container: %s", container_name)
+        # An agent whose docker exec timed out on a previous bug is still
+        # alive in here: it keeps reverting files in /src and deleting the
+        # fuzz target in /out, which corrupts this bug's run.  Reap before
+        # touching anything else.
+        _exec_sweep(container_name, user="root")
         # Wipe /out and /work contents from inside the container so stale
         # binaries don't bleed across bugs. (We cannot rmtree the host-side
         # directories while the bind mount is live.)
@@ -1340,6 +1379,7 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             "':(exclude)Makefile' ':(exclude)*/Makefile' "
             "':(exclude)*.o' ':(exclude)*.a' ':(exclude)*.so' ':(exclude)*.so.*' "
             "':(exclude)*.d' ':(exclude)*.pc' ':(exclude)config.h' "
+            "':(exclude)*config.h.in' "
             "':(exclude)build/' ':(exclude)_build/'"
         )
         # Ghostscript: build.sh replaces freetype/ and zlib/ with external
@@ -1452,11 +1492,18 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             # Capture a fresh fuzzer output so the saved crash log reflects
             # what the verifier just saw (and so the post-minimize diff
             # step has a reference text for stack-matching).
+            # -rss_limit_mb: libFuzzer's 2048MB default also caps a single
+            # allocation, so a bug reached through a large malloc (htslib
+            # OSV-2020-999 allocates 4GB in vcf_parse_format) aborts as
+            # `out-of-memory` here and the saved crash log records that
+            # instead of the real fault. Use the same cap the verifier ran
+            # with, so the log matches what it just judged.
             _, fuzz_out = _exec_capture(
                 container_name,
                 f"export ASAN_OPTIONS=detect_leaks=0"
                 f":external_symbolizer_path=/out/llvm-symbolizer; "
-                f"/out/{fuzzer} -runs=10 /work/{testcase} 2>&1",
+                f"/out/{fuzzer} -runs=10 -rss_limit_mb={_RSS_LIMIT_MB} "
+                f"/work/{testcase} 2>&1",
                 timeout=120,
             )
 
@@ -1495,6 +1542,33 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                 premin_path.write_text(premin_diff)
                 logger.info("Pre-minimize diff saved: %s (%d bytes)",
                             premin_path, len(premin_diff))
+                minimize_budget = _minimize_budget(args)
+                if not minimize_budget:
+                    logger.warning(
+                        "Skipping minimization: only %.0fs of the caller's "
+                        "%ss budget remain -- keeping the verified patch",
+                        max(0.0, args.total_budget - (time.monotonic() - _RUN_START)),
+                        args.total_budget,
+                    )
+                    skip_output = (
+                        "Minimization skipped: not enough of the caller's "
+                        "wall-clock budget remained after the transplant "
+                        "phase.  The saved patch is the verified, "
+                        "un-minimized one.\n"
+                    )
+                    if codex_mode != "interactive":
+                        (output_dir / "minimize_output.jsonl").write_text(skip_output)
+                    (output_dir / "minimize_output.txt").write_text(skip_output)
+                    _write_minimize_delta(output_dir, premin_path, diff_path,
+                                          minimized_kept=False)
+                    return exit_code
+                if minimize_budget < args.minimize_timeout:
+                    logger.warning(
+                        "Minimize budget trimmed to %ds (asked %ds): earlier "
+                        "phases used more of the caller's %ss budget than "
+                        "expected", minimize_budget, args.minimize_timeout,
+                        args.total_budget,
+                    )
                 minimize_prompt = _build_minimize_prompt(args)
                 # Resume the transplant session so the agent keeps
                 # build-environment context (workarounds, paths, etc.)
@@ -1515,11 +1589,11 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                 min_start = time.monotonic()
                 if codex_mode == "interactive":
                     min_exit, min_output = _exec_interactive(
-                        container_name, minimize_cmd, timeout=args.minimize_timeout,
+                        container_name, minimize_cmd, timeout=minimize_budget,
                     )
                 else:
                     min_exit, min_output = _exec_capture(
-                        container_name, minimize_cmd, timeout=args.minimize_timeout,
+                        container_name, minimize_cmd, timeout=minimize_budget,
                     )
                 min_elapsed = time.monotonic() - min_start
                 if _usage_tracker:
@@ -1533,6 +1607,29 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                     (output_dir / "minimize_output.txt").write_text(
                         _format_codex_output(min_output)
                     )
+
+                if min_exit != 0:
+                    # The minimizer timed out or crashed.  Its exit status used
+                    # to be logged and dropped, after which `git diff` was
+                    # re-read and saved as "the minimized diff" -- but that
+                    # tree is whatever the half-finished (and, before the
+                    # reaping fix, still-running) agent left behind: possibly
+                    # mid-revert, with the bug no longer reachable.  Keep the
+                    # verified pre-minimize patch instead and say so.
+                    logger.warning(
+                        "Minimizer exited %d (not a clean finish) -- keeping "
+                        "the verified pre-minimize patch; this bug is NOT "
+                        "minimized", min_exit)
+                    diff_path.write_text(premin_path.read_text())
+                    (output_dir / "minimize_failed.txt").write_text(
+                        f"minimizer exit={min_exit} after {min_elapsed:.0f}s "
+                        f"(budget {minimize_budget}s)\n"
+                        "bug_transplant.diff is the un-minimized, verified "
+                        "transplant patch.\n"
+                    )
+                    _write_minimize_delta(output_dir, premin_path, diff_path,
+                                          minimized_kept=False)
+                    return exit_code
 
                 # Re-save the (now minimized) diff via git diff
                 _, min_diff = _exec_capture(
@@ -1576,8 +1673,18 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                     f"elif [ ! -f /work/{testcase} ]; then cp /corpus/{testcase} /work/{testcase}; fi; true",
                 )
                 if getattr(args, "skip_verify", False):
-                    logger.info("Post-minimize verification SKIPPED "
-                                "(--skip-verify): keeping the minimized diff")
+                    # Not a pass -- just unchecked.  Safe to keep the minimized
+                    # diff only because a non-zero minimizer exit already
+                    # returned above, so reaching here means the agent
+                    # finished cleanly and claims the bug still triggers.
+                    logger.warning("Post-minimize verification SKIPPED "
+                                   "(--skip-verify): keeping the minimized "
+                                   "diff UNVERIFIED")
+                    (output_dir / "minimize_unverified.txt").write_text(
+                        "Minimization completed but was never re-verified "
+                        "(--skip-verify).\nThe crash is not confirmed to "
+                        "survive minimization.\n"
+                    )
                     post_min_ok = True
                 else:
                     post_min_ok = verify_bug_triggers(
@@ -1587,11 +1694,15 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                     )
                 if post_min_ok:
                     logger.info("Post-minimize verification PASSED")
+                    # Same memory cap as the pre-minimize capture, or the
+                    # minimized diff's saved crash log records an OOM the
+                    # verifier never saw.
                     _, fuzz_out2 = _exec_capture(
                         container_name,
                         f"export ASAN_OPTIONS=detect_leaks=0"
                         f":external_symbolizer_path=/out/llvm-symbolizer; "
-                        f"/out/{fuzzer} -runs=10 /work/{testcase} 2>&1",
+                        f"/out/{fuzzer} -runs=10 -rss_limit_mb={_RSS_LIMIT_MB} "
+                        f"/work/{testcase} 2>&1",
                         timeout=120,
                     )
                     crash_out_path.write_text(fuzz_out2)
@@ -1714,30 +1825,143 @@ def _exec(container_name: str, command: str, user: str | None = None) -> int:
     return subprocess.call(cmd)
 
 
+# Marker every wrapped `docker exec` payload carries, so a stale process from
+# an earlier bug can be swept even if its pid file is gone.
+_EXEC_MARKER = "BT_EXEC_ID"
+
+
+def _exec_sweep(container_name: str, user: str | None = None) -> int:
+    """Kill any container-side process left over from an earlier _exec_capture.
+
+    ``docker exec`` does not signal the container-side process when the client
+    goes away, so a timeout (or a killed parent) leaves the command running.
+    In the shared-container batch those orphans keep editing /src and /out --
+    reverting files, deleting the fuzz target -- and silently corrupt whichever
+    bug is running next.  Called before each bug as a backstop to the
+    per-command reaping in _exec_capture.
+
+    The marker pattern is passed through the environment rather than the
+    script text: ``pgrep -f`` matches on argv, so a literal marker in the
+    sweep's own command line would make it match (and kill) itself.
+    """
+    script = (
+        'pids=$(pgrep -f "$BT_SWEEP_PAT" 2>/dev/null | grep -vx "$$" || true); '
+        'if [ -z "$pids" ]; then exit 0; fi; '
+        'echo "$pids"; '
+        'for sig in TERM KILL; do '
+        '  for p in $pids; do '
+        '    g=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d " "); '
+        '    if [ -n "$g" ]; then kill -$sig -"$g" 2>/dev/null || true; '
+        '    else kill -$sig "$p" 2>/dev/null || true; fi; '
+        '  done; '
+        '  [ "$sig" = TERM ] && sleep 3; '
+        'done; true'
+    )
+    cmd = ["docker", "exec", "-e", f"BT_SWEEP_PAT={_EXEC_MARKER}="]
+    if user:
+        cmd += ["-u", user]
+    cmd += [container_name, "bash", "-c", script]
+    try:
+        res = subprocess.run(cmd, capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=60)
+    except Exception as exc:
+        logger.warning("Orphan sweep failed: %s", exc)
+        return 0
+    found = [ln for ln in (res.stdout or "").split() if ln.strip().isdigit()]
+    if found:
+        logger.warning("Swept %d orphaned container process(es) left by an "
+                       "earlier command: %s", len(found), " ".join(found))
+    return len(found)
+
+
+def _exec_kill(container_name: str, pid_file: str,
+               user: str | None = None) -> None:
+    """Kill the container-side process group started by _exec_capture."""
+    script = (
+        f"p=$(cat {pid_file} 2>/dev/null); [ -z \"$p\" ] && exit 0; "
+        "g=$(ps -o pgid= -p $p 2>/dev/null | tr -d ' '); "
+        "if [ -n \"$g\" ]; then kill -TERM -$g 2>/dev/null; else kill -TERM $p 2>/dev/null; fi; "
+        "sleep 3; "
+        "if [ -n \"$g\" ]; then kill -KILL -$g 2>/dev/null; else kill -KILL $p 2>/dev/null; fi; "
+        "true"
+    )
+    cmd = ["docker", "exec"]
+    if user:
+        cmd += ["-u", user]
+    cmd += [container_name, "bash", "-c", script]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=60)
+    except Exception as exc:
+        logger.warning("Could not kill container-side process: %s", exc)
+
+
 def _exec_capture(
     container_name: str,
     command: str,
     timeout: int = 3600,
     user: str | None = None,
 ) -> tuple[int, str]:
-    """docker exec a command, capturing output."""
-    cmd = ["docker", "exec"]
+    """docker exec a command, capturing output.
+
+    The payload runs as a backgrounded job inside the container with its pid
+    recorded and its output redirected to a file.  That buys two things a
+    plain ``subprocess.run(["docker","exec",...], timeout=...)`` cannot give:
+
+    * On timeout the container-side process group is killed.  Python only
+      kills the local ``docker exec`` client, and Docker does not forward
+      that to the process in the container -- so every timeout used to leak a
+      live agent into the shared source tree.
+    * Whatever the command printed before being killed is still recovered,
+      instead of being replaced by a bare "TIMEOUT" string.
+    """
+    exec_id = uuid.uuid4().hex[:12]
+    pid_file = f"/tmp/.bt_exec_{exec_id}.pid"
+    out_file = f"/tmp/.bt_exec_{exec_id}.out"
+    wrapped = (
+        f"export {_EXEC_MARKER}={exec_id}\n"
+        f"{{\n{command}\n}} > {out_file} 2>&1 &\n"
+        f"echo $! > {pid_file}\n"
+        "wait $!"
+    )
+    base = ["docker", "exec"]
     if user:
-        cmd += ["-u", user]
-    cmd += [container_name, "bash", "-c", command]
+        base += ["-u", user]
+    timed_out = False
     try:
         result = subprocess.run(
-            cmd,
+            base + [container_name, "bash", "-c", wrapped],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
         )
-        output = result.stdout + result.stderr
-        return result.returncode, output
+        returncode = result.returncode
+        client_err = result.stderr or ""
     except subprocess.TimeoutExpired:
-        logger.error("Command timed out after %ds", timeout)
-        return 124, f"TIMEOUT after {timeout}s"
+        timed_out = True
+        returncode = 124
+        client_err = ""
+        logger.error("Command timed out after %ds -- killing container-side "
+                     "process group", timeout)
+        _exec_kill(container_name, pid_file, user)
+
+    # Drain the output file and clean up in a single exec.
+    try:
+        drain = subprocess.run(
+            base + [container_name, "bash", "-c",
+                    f"cat {out_file} 2>/dev/null; rm -f {out_file} {pid_file}"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+        )
+        output = drain.stdout or ""
+    except Exception as exc:
+        logger.warning("Could not read command output: %s", exc)
+        output = ""
+    if client_err:
+        output += client_err
+    if timed_out:
+        output += (f"\n[TIMEOUT after {timeout}s -- container-side process "
+                   f"group killed; output above is what it produced first]\n")
+    return returncode, output
 
 
 def _exec_interactive(
@@ -1886,6 +2110,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Timeout in seconds for transplant agent (default: 3600)")
     parser.add_argument("--minimize-timeout", type=int, default=1200,
                         help="Timeout in seconds for minimize agent (default: 1200)")
+    parser.add_argument("--total-budget", type=int, default=None,
+                        help="Total wall-clock seconds the caller will allow "
+                             "this run before it is killed.  When set, the "
+                             "minimize agent's timeout is clamped to what is "
+                             "actually left, so an over-long build cannot "
+                             "starve minimization into a hard kill.")
     parser.add_argument("--codex-mode", choices=["exec", "interactive"],
                         default="exec",
                         help="Agent invocation mode: exec (default, JSONL) "
@@ -1910,7 +2140,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global _usage_tracker
+    global _usage_tracker, _RUN_START
+
+    _RUN_START = time.monotonic()
 
     filled = load_setenv_defaults("TESTCASES", "REPO_PATH", "BUGINFO_PATH")
     parser = build_parser()
