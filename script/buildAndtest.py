@@ -100,7 +100,7 @@ def resolve_commit_hash(repo_path: str, commit_hash: str) -> str:
                     result = subprocess.run(
                         ["git", "-C", repo_path, "log", "--all", "--oneline", 
                          "--no-walk", "--abbrev-commit"],
-                        capture_output=True, text=True
+                        capture_output=True, encoding="utf-8", errors="replace"
                     )
                     lines = result.stdout.strip().split('\n')
                     matches = [l.split()[0] for l in lines if l.startswith(commit_hash)]
@@ -442,7 +442,7 @@ def do_bug_build(target_path, target_bug_ids, bug_infos, commit_id, month, build
             ]
 
             logger.info(' '.join(cmd))
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
             fuzzer_binary = os.path.join(oss_fuzz_path, "build", "out", target, fuzzer) if fuzzer else None
             fuzzer_exists = fuzzer_binary is not None and os.path.exists(fuzzer_binary)
             build_failed = (
@@ -583,7 +583,6 @@ def do_bug_test(target_path, commit_id, writer, filter_bug_ids, bug_infos,
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
                 encoding="utf-8",
                 errors="replace",   # or "ignore"
                 timeout=60,

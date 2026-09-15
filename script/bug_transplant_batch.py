@@ -116,6 +116,23 @@ STRONG_TRIGGER_STATUSES = {"1|1", "1|0", "0.5|1"}
 # don't waste agent runs on bugs that already crash locally.
 LOCAL_BUG_STATUSES = {"1|1", "1|0", "0.5|1", "0.5|0"}
 
+# Wall-clock the per-bug subprocess needs on top of the two agent budgets.
+# bug_transplant.py spends this outside both --timeout and --minimize-timeout:
+# the Phase 1 `build_version` (which can take ~10min even with a cached image),
+# the pre-minimize crash capture, and the post-minimize rebuild.  Charging it
+# to the same wallet as the agents is what let a transplant that legitimately
+# used its full 3600s starve the minimizer (OSV-2024-123 was killed ~370s
+# short of its 1200s allowance, discarding a finished minimization pass).
+PHASE_OVERHEAD_SECONDS = 1200
+
+
+def subprocess_budget(args: argparse.Namespace) -> int:
+    """Total wall-clock to allow one bug_transplant.py run."""
+    return ((args.timeout or 3600)
+            + (args.minimize_timeout or 1200)
+            + PHASE_OVERHEAD_SECONDS)
+
+
 
 def _is_ancestor(repo_path: str, older: str, newer: str) -> bool:
     """Check if *older* is an ancestor of *newer* using git CLI."""
@@ -157,7 +174,8 @@ def find_adjacent_csv_commit(
                 cmd.append("--reverse")
             result = subprocess.run(
                 cmd, cwd=repo_path,
-                capture_output=True, text=True,
+                capture_output=True,
+                encoding='utf-8', errors='replace',
             )
             if result.returncode != 0:
                 continue
@@ -285,7 +303,13 @@ def collect_all_crash_trace_data(
                 cmd += ["--build_csv", args.build_csv]
             if args.runner_image:
                 cmd += ["--runner-image", args.runner_image]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # errors='replace': the fuzzer's stdout is arbitrary bytes (PoC
+            # content echoed back, sanitizer output), and a strict UTF-8
+            # decode aborted the whole batch mid-collection.
+            result = subprocess.run(
+                cmd, capture_output=True,
+                encoding='utf-8', errors='replace',
+            )
             if result.returncode != 0:
                 logger.warning("[%s] collect_crash failed (exit %d)", bug_id, result.returncode)
             elif crash_file.exists():
@@ -306,7 +330,13 @@ def collect_all_crash_trace_data(
                 cmd += ["--build_csv", args.build_csv]
             if args.runner_image:
                 cmd += ["--runner-image", args.runner_image]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # errors='replace': the fuzzer's stdout is arbitrary bytes (PoC
+            # content echoed back, sanitizer output), and a strict UTF-8
+            # decode aborted the whole batch mid-collection.
+            result = subprocess.run(
+                cmd, capture_output=True,
+                encoding='utf-8', errors='replace',
+            )
             if result.returncode != 0:
                 logger.warning("[%s] collect_trace failed (exit %d)", bug_id, result.returncode)
             elif trace_file.exists():
@@ -559,6 +589,9 @@ def run_single_bug(
         cmd += ["--timeout", str(args.timeout)]
     if args.minimize_timeout:
         cmd += ["--minimize-timeout", str(args.minimize_timeout)]
+    # Tell the child how long it actually has, so it can trim (or skip) the
+    # minimize pass instead of being SIGKILLed partway through it.
+    cmd += ["--total-budget", str(subprocess_budget(args))]
     if args.keep_containers:
         cmd.append("--keep-container")
     if args.verbose:
@@ -581,7 +614,7 @@ def run_single_bug(
             # Interactive mode: inherit terminal so tmux can attach
             rc = subprocess.call(
                 cmd,
-                timeout=(args.timeout or 3600) + (args.minimize_timeout or 1200) + 120,
+                timeout=subprocess_budget(args),
             )
             result["exit_code"] = rc
             result["status"] = "success" if rc == 0 else "failed"
@@ -593,7 +626,7 @@ def run_single_bug(
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=(args.timeout or 3600) + (args.minimize_timeout or 1200) + 120,
+                timeout=subprocess_budget(args),
             )
             result["exit_code"] = proc.returncode
             if proc.returncode == 0:

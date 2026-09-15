@@ -121,7 +121,7 @@ def config(agent: str = DEFAULT_AGENT) -> dict:
 
 def _image_workdir(image: str) -> str:
     p = subprocess.run(["docker", "image", "inspect", image, "--format",
-                        "{{.Config.WorkingDir}}"], capture_output=True, text=True)
+                        "{{.Config.WorkingDir}}"], capture_output=True, encoding="utf-8", errors="replace")
     return (p.stdout.strip() or "/src") if p.returncode == 0 else "/src"
 
 
@@ -136,7 +136,7 @@ def build_agent_image(base_image: str, tag: str, *, agent: str = DEFAULT_AGENT,
     """
     cfg = config(agent)
     p = subprocess.run(["docker", "image", "inspect", base_image, "--format",
-                        "{{.Id}}"], capture_output=True, text=True)
+                        "{{.Id}}"], capture_output=True, encoding="utf-8", errors="replace")
     if p.returncode != 0:
         raise SystemExit(f"base image {base_image} not found: {p.stderr.strip()}")
     base_id = p.stdout.strip()
@@ -146,7 +146,7 @@ def build_agent_image(base_image: str, tag: str, *, agent: str = DEFAULT_AGENT,
         got = subprocess.run(
             ["docker", "image", "inspect", tag, "--format",
              '{{index .Config.Labels "ungated.agent-key"}}'],
-            capture_output=True, text=True)
+            capture_output=True, encoding="utf-8", errors="replace")
         if got.returncode == 0 and got.stdout.strip() == key:
             logger.info("agent image up to date: %s", tag)
             return tag

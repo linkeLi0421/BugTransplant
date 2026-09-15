@@ -48,7 +48,7 @@ def extract_include_paths() -> list[str]:
         ['clang', '-E', '-x', 'c', '-', '-v'],
         input='',  # empty input to simulate /dev/null
         capture_output=True,
-        text=True
+        encoding="utf-8", errors="replace"
     )
 
     clang_output = result.stderr  # `-v` output goes to stderr
