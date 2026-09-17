@@ -68,9 +68,14 @@ UBSAN_CRASH_TYPES = frozenset({
     "Implicit-unsigned-integer-truncation",
     "Implicit-signed-integer-truncation",
 })
-# libFuzzer's own default, which is what the FuzzBench runner used: the
-# campaign never passed -rss_limit_mb, so replaying with a larger cap is a
-# different environment.
+# libFuzzer's default, which is what the trial containers actually used.
+# The benchmark Dockerfiles set ENV ADDITIONAL_ARGS="-rss_limit_mb=8192" and
+# claim the runners splice it on, but that ENV is set in the *builder* image;
+# FuzzBench's runner image is built from base-runner and only copies /out, so
+# neither ADDITIONAL_ARGS nor ASAN_OPTIONS survives into the container the
+# trials run in (`docker inspect` on the runner image shows neither, and
+# scheduler's docker run passes a fixed -e list that includes neither).
+# Measured: replaying htslib at 8192 vs 2048 gives byte-identical verdicts.
 DEFAULT_RSS_LIMIT_MB = 2048
 DEFAULT_JOBS = max(4, (os.cpu_count() or 8) // 2)
 
@@ -247,17 +252,28 @@ def run_batch(container: str, target: str, names: list[str], *,
             # instead, stopping at the first crash.
             f"for _ in $(seq {runs}); do "
             f"o=$(timeout -s KILL {unit_timeout} {target} /inputs/@ 2>&1); "
-            f'case "$o" in *"SUMMARY: "*Sanitizer*) echo "$o"; break;; esac; '
+            f'case "$o" in *"SUMMARY: "*Sanitizer*|*"libFuzzer: deadly signal"*) echo "$o"; break;; esac; '
             f"done; echo \"$o\""
         )
         script = (
             f"export ASAN_OPTIONS={asan}; "
             f"cat /tmp/batch.txt | xargs -P {jobs} -I@ bash -c '"
             f"out=$({invoke} 2>&1); "
-            f'if echo "$out" | grep -qE "^SUMMARY: (Address|Leak|Memory|Thread|Undefined)Sanitizer"; '
+            # Order matters: libFuzzer's timeout and OOM paths are classified
+            # first, since neither is a bug.
+            #
+            # A crash is NOT only a sanitizer report. The campaign oracle is
+            # FuzzBench's measurer, which records crash_type from the stacktrace
+            # and logs Abrt and ASSERT: htslib transplants abort or trip an
+            # assertion rather than tripping ASan, and libFuzzer reports those as
+            # "deadly signal". Matching only "SUMMARY: ...Sanitizer" scored 9,560
+            # of 17,432 htslib inputs (55%) as unable to reproduce when in fact
+            # they crash on every run.
+            f'if echo "$out" | grep -q "ERROR: libFuzzer: timeout"; then echo "timeout @"; '
+            f'elif echo "$out" | grep -q "ERROR: libFuzzer: out-of-memory"; then echo "oom @"; '
+            f'elif echo "$out" | grep -qE "^SUMMARY: (Address|Leak|Memory|Thread|Undefined)Sanitizer"; '
             f'then echo "crash @"; '
-            f'elif echo "$out" | grep -q "ERROR: libFuzzer: timeout"; then echo "timeout @"; '
-            f'elif echo "$out" | grep -q "out-of-memory"; then echo "oom @"; '
+            f'elif echo "$out" | grep -q "ERROR: libFuzzer: deadly signal"; then echo "crash @"; '
             f'else echo "clean @"; fi\''
         )
         subprocess.run(
