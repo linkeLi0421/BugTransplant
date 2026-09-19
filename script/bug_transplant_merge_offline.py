@@ -69,6 +69,7 @@ from bug_transplant import (
     load_setenv_defaults,
     set_active_agent,
 )
+from bug_verify import _RSS_LIMIT_MB  # noqa: E402
 
 
 def _apply_all_dispatch_bytes(container, dispatch_state):
@@ -747,6 +748,12 @@ def load_and_categorize_bugs(
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Load bugs and split into local, testcase-only, and diff bugs.
 
+    This always returns EVERY bug, even when ``--only-bugs`` narrows the run.
+    Dispatch slots are assigned from this list, and a slot depends on the
+    total bug count, so filtering here would renumber every other bug and
+    invalidate their already-wrapped diffs. ``--only-bugs`` is applied later,
+    to the wrap loop alone.
+
     Returns (local_bugs, testcase_only_bugs, diff_bugs).
     """
     with open(summary_path) as f:
@@ -1028,6 +1035,12 @@ def wrap_bug_with_dispatch(
         dispatch_slot=str(dispatch_slot),
         dispatch_value=str(dispatch_value),
         dispatch_nbytes=str(dispatch_state.get("dispatch_bytes", 1)),
+        # Hand the agent the verifier's own memory cap. Without it the agent
+        # self-checks under libFuzzer's 2048MB default, reports an
+        # out-of-memory as a successful trigger, and the wrap then fails
+        # verification at ~40 min a time.
+        dispatch_rss_limit_mb=str(_RSS_LIMIT_MB),
+        fuzzer=bug.get("fuzzer", ""),
         patch_path=f"/tmp/patch_{bug_id}.diff",
         testcase_path=f"/work/{bug['testcase']}",
         output_testcase_path=f"/work/{bug['testcase']}",
@@ -1458,17 +1471,31 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                             bug["bug_id"], staged_patched)
 
         # ------------------------------------------------------------------
-        # 5. Verify local bugs at baseline
+        # 5. Verify local bugs at baseline  -- TEMPORARILY DISABLED
         # ------------------------------------------------------------------
-        logger.info("\n=== Verifying local bugs at baseline ===")
-        for bug in local_bugs:
-            triggers = verify_bug_triggers(
-                container, bug["bug_id"], bug["fuzzer"],
-                bug["testcase"], bug.get("sanitizer", "address"),
-                bug.get("crash_log"),
-            )
-            status = "OK" if triggers else "FAIL"
-            logger.info("[%s] local: %s", bug["bug_id"], status)
+        # libredwg 2026-09-18: all 3 "local" bugs (OSV-2023-314, -397, -1051)
+        # HANG rather than crash at the target commit -- 300s with no crash on
+        # a PRISTINE harness and the untouched PoC, so this is not the dispatch
+        # byte and not the merge container.  Their "already triggers at target"
+        # status comes from the CSV matrix, which was never re-checked.  Each
+        # one costs ~80min here (40 attempts x a 120s timeout) to learn nothing,
+        # so the loop is commented out rather than left to burn hours.
+        #
+        # NOTE: the local bugs are still staged into the merge; they are simply
+        # not verified.  They contribute nothing to the benchmark until the
+        # hang is understood, so treat the bug count as the transplanted set.
+        # Re-enable by uncommenting once the target commit for them is fixed.
+        logger.info("\n=== Verifying local bugs at baseline: SKIPPED ===")
+        logger.info("Local bugs staged but NOT verified (%d): %s",
+                    len(local_bugs), ", ".join(b["bug_id"] for b in local_bugs))
+        # for bug in local_bugs:
+        #     triggers = verify_bug_triggers(
+        #         container, bug["bug_id"], bug["fuzzer"],
+        #         bug["testcase"], bug.get("sanitizer", "address"),
+        #         bug.get("crash_log"),
+        #     )
+        #     status = "OK" if triggers else "FAIL"
+        #     logger.info("[%s] local: %s", bug["bug_id"], status)
 
         # ------------------------------------------------------------------
         # 6. Verify testcase-only bugs
@@ -1491,14 +1518,32 @@ def run_offline_merge(args: argparse.Namespace) -> int:
 
         # Load previously wrapped diffs from disk only if the dispatch bit
         # order is unchanged. Otherwise stale wrappers check the wrong bit.
+        # --only-bugs scopes WRAPPING, not the merge: the named bugs are
+        # re-wrapped from scratch, every other bug keeps the wrapped diff it
+        # already has, and phase 2 merges the union. That makes it usable to
+        # redo one bug without paying to re-wrap the rest.
+        rewrap_only = set(getattr(args, "only_bugs", None) or [])
         if reuse_wrapped_cache:
             for bd in diff_bugs:
                 bid = bd["bug_id"]
+                if bid in rewrap_only:
+                    continue  # selected for re-wrapping; ignore the cache
                 existing = output_dir / f"wrapped_{bid}.diff"
                 if existing.exists() and existing.stat().st_size > 0:
                     wrapped_diffs[bid] = str(existing)
                     logger.info("[%s] Loaded existing wrapped diff (%d bytes)",
                                 bid, existing.stat().st_size)
+        if rewrap_only:
+            missing = [bd["bug_id"] for bd in diff_bugs
+                       if bd["bug_id"] not in rewrap_only
+                       and bd["bug_id"] not in wrapped_diffs]
+            logger.info("--only-bugs: re-wrapping %d bug(s): %s",
+                        len(rewrap_only), ", ".join(sorted(rewrap_only)))
+            if missing:
+                logger.warning(
+                    "--only-bugs: %d bug(s) have no wrapped diff and are NOT "
+                    "being wrapped this run, so they will be ABSENT from the "
+                    "merge: %s", len(missing), ", ".join(sorted(missing)))
 
         start_step = getattr(args, "start_step", 0)
         for i, bd in enumerate(diff_bugs):
@@ -1511,6 +1556,10 @@ def run_offline_merge(args: argparse.Namespace) -> int:
             # Skip if already wrapped (resume) or before start-step
             if bug_id in wrapped_diffs:
                 logger.info("[%s] Already wrapped, skipping", bug_id)
+                continue
+            if rewrap_only and bug_id not in rewrap_only:
+                logger.info("[%s] Not selected by --only-bugs, skipping wrap",
+                            bug_id)
                 continue
             if i < start_step:
                 logger.info("[%s] Before start-step %d, skipping", bug_id, start_step)
@@ -1859,6 +1908,13 @@ def main():
                              "(default: $TESTCASES, else script/setenv.sh)")
     parser.add_argument("--local-bugs", nargs="*", default=None,
                         help="Bug IDs that already trigger at target")
+    parser.add_argument("--only-bugs", nargs="+", default=None,
+                        help="Re-wrap only these bug IDs. Every other bug "
+                             "keeps its existing wrapped_<id>.diff and phase 2 "
+                             "still merges them all, so this redoes one bug "
+                             "without re-wrapping the rest. Dispatch slots are "
+                             "still assigned across ALL bugs, so the geometry "
+                             "matches a full run.")
     parser.add_argument("--agent", choices=["codex", "opencode"],
                         default="codex",
                         help="Agent CLI backend (default: codex)")

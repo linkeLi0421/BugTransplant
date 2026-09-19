@@ -41,10 +41,18 @@ class CodexUsageTracker:
         self.cost = 0.0
 
     def parse(self, output: str, model: str | None = None) -> dict:
-        """Parse JSONL output from ``codex exec --json`` and return usage dict."""
+        """Parse JSONL from ``codex exec --json`` or ``opencode run --format json``.
+
+        Codex reports usage as a top-level ``usage`` object per event.
+        Opencode hangs it off ``part`` on ``step-finish`` events, and also
+        reports the provider's own ``cost`` -- which is preferred over the
+        pricing table when present, since the table only covers Codex models.
+        """
         total_in = 0
         total_cached = 0
         total_out = 0
+        reported_cost = 0.0
+        saw_reported_cost = False
         for line in output.splitlines():
             line = line.strip()
             if not line:
@@ -53,19 +61,41 @@ class CodexUsageTracker:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(ev, dict):
+                continue
             usage = ev.get("usage")
             if usage:
                 total_in += usage.get("input_tokens", 0)
                 total_cached += usage.get("cached_input_tokens", 0)
                 total_out += usage.get("output_tokens", 0)
+                continue
+            part = ev.get("part")
+            if not isinstance(part, dict) or part.get("type") != "step-finish":
+                continue
+            tokens = part.get("tokens")
+            if not isinstance(tokens, dict):
+                continue
+            cache = tokens.get("cache")
+            cache = cache if isinstance(cache, dict) else {}
+            total_in += tokens.get("input", 0) or 0
+            total_cached += cache.get("read", 0) or 0
+            # Reasoning tokens are generated, so they bill as output.
+            total_out += (tokens.get("output", 0) or 0) + (tokens.get("reasoning", 0) or 0)
+            step_cost = part.get("cost")
+            if isinstance(step_cost, (int, float)):
+                reported_cost += float(step_cost)
+                saw_reported_cost = True
 
-        pricing = CODEX_PRICING.get(model or "", CODEX_PRICING_DEFAULT)
-        uncached_in = total_in - total_cached
-        cost = (
-            uncached_in * pricing["input"] / 1_000_000
-            + total_cached * pricing["cached_input"] / 1_000_000
-            + total_out * pricing["output"] / 1_000_000
-        )
+        if saw_reported_cost:
+            cost = reported_cost
+        else:
+            pricing = CODEX_PRICING.get(model or "", CODEX_PRICING_DEFAULT)
+            uncached_in = max(total_in - total_cached, 0)
+            cost = (
+                uncached_in * pricing["input"] / 1_000_000
+                + total_cached * pricing["cached_input"] / 1_000_000
+                + total_out * pricing["output"] / 1_000_000
+            )
 
         self.input_tokens += total_in
         self.cached_input_tokens += total_cached
@@ -139,10 +169,17 @@ class CodexUsageTracker:
             if total_in or total_out or total_cached:
                 break
 
-        # Look for cost: "$0.1234" or "cost: $1.23"
-        m = re.search(r"\$\s*([\d.]+)", clean)
+        # Look for a *labelled* cost: "Cost: $0.1234".  A bare "$<number>"
+        # is not safe to trust here: agent transcripts are full of shell
+        # variables and `xxd`/`od` hexdumps of binary testcases, whose ASCII
+        # column happily yields strings like "$34633".  One such dump once
+        # booked a single bug at $34,633.
+        m = re.search(r"\bcost\b[^\n$]{0,40}\$\s*([\d,]*\.?\d+)", clean, re.IGNORECASE)
         if m:
-            cost = float(m.group(1))
+            try:
+                cost = float(m.group(1).replace(",", ""))
+            except ValueError:
+                cost = 0.0
 
         # If we found tokens but no explicit cost, compute it
         if total_in + total_out > 0 and cost == 0.0:
@@ -154,10 +191,15 @@ class CodexUsageTracker:
                 + total_out * pricing["output"] / 1_000_000
             )
 
-        self.input_tokens += total_in
-        self.cached_input_tokens += total_cached
-        self.output_tokens += total_out
-        self.cost += cost
+        # A cost with no token counts behind it is a parse artefact, not a
+        # charge: never let it reach the accumulators.
+        if total_in + total_out + total_cached == 0:
+            cost = 0.0
+        else:
+            self.input_tokens += total_in
+            self.cached_input_tokens += total_cached
+            self.output_tokens += total_out
+            self.cost += cost
 
         return {
             "input_tokens": total_in,

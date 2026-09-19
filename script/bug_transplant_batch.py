@@ -575,6 +575,10 @@ def run_single_bug(
         cmd += ["--agent", args.agent]
     cmd.append("--skip-verify" if getattr(args, "skip_verify", True)
                else "--verify")
+    if getattr(args, "minimize_only", False):
+        cmd.append("--minimize-only")
+    # We built both images at startup for this exact project/target commit.
+    cmd.append("--skip-image-build")
     if args.runner_image:
         cmd += ["--runner-image", args.runner_image]
     if args.skip_collect:
@@ -880,6 +884,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Docker image pinning (e.g. 'auto')")
 
     # Modes
+    parser.add_argument("--minimize-only", action="store_true",
+                        help="Re-run only the minimization pass for bugs that "
+                             "already have a verified bug_transplant.diff. "
+                             "Pair with --bug_id to name them; --resume would "
+                             "skip them all, since they are already 'success'.")
     parser.add_argument("--resume", action="store_true",
                         help="Skip already-completed bugs")
     parser.add_argument("--dry-run", action="store_true",

@@ -864,7 +864,9 @@ def start_merge_container(
         "-e", "ARCHITECTURE=x86_64",
         "-e", f"FUZZING_LANGUAGE={language}",
         "-e", "HELPER=True",
-        "-e", "MAKEFLAGS=--output-sync=line",
+        # Keep in step with bug_transplant._build_container_env: without -j
+        # every autotools build here runs serially.
+        "-e", "MAKEFLAGS=-j30 --output-sync=line",
         "-e", "CMAKE_BUILD_PARALLEL_LEVEL=30",
         "-e", "NINJA_STATUS=",
         "-e", "TERM=dumb",

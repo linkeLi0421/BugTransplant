@@ -56,6 +56,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bug_verify import verify_bug_triggers, _RSS_LIMIT_MB  # noqa: E402
 
+# A verification rebuild is a correctness gate, not a performance knob: it has
+# to be able to finish a FULL rebuild.  300s could not even complete one for
+# libredwg (7 large files include dwg.spec, so a cold build is ~540s), and
+# seven transplants the agent had verified in both directions were discarded as
+# "Official compile failed" purely because the rebuild was cut off mid-flight.
+_VERIFY_BUILD_TIMEOUT = 1800
+
 logger = logging.getLogger(__name__)
 
 # Lazy-initialized in main(); imported here so the module can be used as a library.
@@ -501,6 +508,27 @@ def _patch_build_sh_for_repeated_compile(
         if ret != 0:
             logger.warning("Failed to patch ghostscript /src/build.sh")
 
+    if project == "libredwg":
+        # libredwg's build.sh re-runs ./autogen.sh on every compile. The
+        # container's autoconf (2.69) regenerates src/config.h.in in a
+        # different form than the committed file (autoconf 2.72+), which
+        # rewrites src/config.h -- and every library object depends on it, so
+        # all 39 sources recompile: ~9 min per build instead of ~21s.
+        # Skip autogen once configure exists. `git clean -fdx` removes
+        # configure between bugs, so each bug's first compile still
+        # regenerates the full autotools stack from scratch; only the agent's
+        # repeated rebuilds within a bug become incremental. The -nt guard
+        # re-runs autogen if an agent edits configure.ac.
+        ret = _exec(
+            container_name,
+            r"""sed -i 's@^sh \./autogen\.sh$@if [ ! -f configure ] || """
+            r"""[ configure.ac -nt configure ]; then sh ./autogen.sh; fi@' """
+            "/src/build.sh",
+            user="root",
+        )
+        if ret != 0:
+            logger.warning("Failed to patch libredwg /src/build.sh")
+
     if project == "ntopng":
         # ntopng's OSS-Fuzz build.sh creates the json-c CMake build dir with
         # bare `mkdir build`. Shared --keep-containers runs can keep that
@@ -522,7 +550,11 @@ def _build_container_env(language: str) -> list[str]:
         "ARCHITECTURE=x86_64",
         f"FUZZING_LANGUAGE={language}",
         "HELPER=True",
-        "MAKEFLAGS=--output-sync=line",
+        # -j matters: libredwg and friends are autotools/make, where
+        # CMAKE_BUILD_PARALLEL_LEVEL does nothing.  Without it every make
+        # build ran serially (~540s cold for libredwg, ~72s per file).
+        # --output-sync=line only has meaning for a parallel build.
+        "MAKEFLAGS=-j30 --output-sync=line",
         "CMAKE_BUILD_PARALLEL_LEVEL=30",
         "NINJA_STATUS=",
         "TERM=dumb",
@@ -1157,8 +1189,17 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
     data_dir = str(DATA_DIR)
     testcases_dir = str(Path(args.testcases_dir).resolve())
     script_dir = str(SCRIPT_DIR)
-    out_dir = str(HOME_DIR / "build" / "out" / args.project)
-    work_dir = str(HOME_DIR / "build" / "work" / args.project)
+    # When this run owns its container (no --container-name), it may be one of
+    # several running concurrently under `bug_transplant_batch.py --jobs N`.
+    # Project-level /out and /work would then be bind-mounted into every
+    # container at once: each bug builds /out/<fuzzer> over the others and the
+    # verification step runs whichever binary won the race, against its own
+    # testcase -- silently wrong results rather than a visible failure.  Give
+    # each bug its own directories.  The shared-container path stays
+    # project-level: it is sequential by construction.
+    _mount_key = args.project if reuse_container else f"{args.project}_{args.bug_id}"
+    out_dir = str(HOME_DIR / "build" / "out" / _mount_key)
+    work_dir = str(HOME_DIR / "build" / "work" / _mount_key)
 
     # Clean and recreate build directories to avoid stale binaries/artifacts
     # from previous runs (prevents "Text file busy" and wrong test results).
@@ -1303,49 +1344,98 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
         )
 
         # --- Copy testcase to /work for easier access ---
-        _exec(
-            container_name,
-            f"cp /corpus/{args.testcase} /work/{args.testcase}",
-            user="root",
-        )
+        minimize_only = bool(getattr(args, "minimize_only", False))
+        saved_dir = DATA_DIR / "bug_transplant" / f"{args.project}_{args.bug_id}"
+        saved_tc = saved_dir / args.testcase
+        if minimize_only and saved_tc.exists():
+            # The transplant may have patched the testcase binary; the saved
+            # one is what the patch was verified against, not /corpus.
+            ctc = f"/data/bug_transplant/{args.project}_{args.bug_id}/{args.testcase}"
+            _exec(
+                container_name,
+                f"cp {shlex.quote(ctc)} /work/{args.testcase} && "
+                f"cp {shlex.quote(ctc)} /out/{args.testcase}",
+                user="root",
+            )
+        else:
+            _exec(
+                container_name,
+                f"cp /corpus/{args.testcase} /work/{args.testcase}",
+                user="root",
+            )
         _exec(container_name, "sudo chown -R agent:agent /src/ /out/ /work/ /data/ 2>/dev/null || true", user="root")
 
         # --- Setup codex credentials ---
         setup_codex_creds(container_name)
 
-        # --- Run agent ---
+        # --- Run agent (or, in --minimize-only mode, re-apply its patch) ---
         codex_mode = getattr(args, "codex_mode", "exec")
-        logger.info("Running %s agent (mode=%s, this may take a while)...",
-                     ACTIVE_AGENT, codex_mode)
-        agent_cmd = build_codex_command(
-            prompt, getattr(args, "model", None), mode=codex_mode,
-        )
-        agent_cmd = _container_in_dir(repo_dir, agent_cmd)
-
-        start_time = time.monotonic()
-        if codex_mode == "interactive":
-            exit_code, output = _exec_interactive(
-                container_name, agent_cmd, timeout=args.timeout,
+        if minimize_only:
+            saved_diff = saved_dir / "bug_transplant.diff"
+            if not saved_diff.exists() or not saved_diff.stat().st_size:
+                logger.error("--minimize-only: no patch to minimize at %s",
+                             saved_diff)
+                return 1
+            logger.info("Minimize-only: re-applying saved patch %s (%d bytes)",
+                        saved_diff, saved_diff.stat().st_size)
+            cdiff = (f"/data/bug_transplant/{args.project}_{args.bug_id}"
+                     "/bug_transplant.diff")
+            # The `chown -R agent:agent /src/` above invalidates git's stat
+            # cache, so `git apply --3way` (which implies --index) fails with
+            # "does not match index". Refresh the cache, apply against the
+            # worktree, and keep --3way only as a fallback for context drift.
+            apply_ret = _exec(
+                container_name,
+                _container_in_dir(
+                    repo_dir,
+                    "git update-index -q --refresh || true; "
+                    f"git apply {shlex.quote(cdiff)} || "
+                    f"git apply --3way {shlex.quote(cdiff)}",
+                ),
+                user="root",
             )
+            if apply_ret != 0:
+                logger.error("--minimize-only: failed to apply %s", saved_diff)
+                return 1
+            _exec(container_name,
+                  "sudo chown -R agent:agent /src/ /out/ /work/ 2>/dev/null || true",
+                  user="root")
+            exit_code, output, elapsed = 0, "", 0.0
         else:
-            exit_code, output = _exec_capture(
-                container_name, agent_cmd, timeout=args.timeout,
+            logger.info("Running %s agent (mode=%s, this may take a while)...",
+                         ACTIVE_AGENT, codex_mode)
+            agent_cmd = build_codex_command(
+                prompt, getattr(args, "model", None), mode=codex_mode,
             )
-        elapsed = time.monotonic() - start_time
+            agent_cmd = _container_in_dir(repo_dir, agent_cmd)
 
-        if _usage_tracker:
-            _usage_tracker.log_usage("transplant", output, getattr(args, "model", None))
+            start_time = time.monotonic()
+            if codex_mode == "interactive":
+                exit_code, output = _exec_interactive(
+                    container_name, agent_cmd, timeout=args.timeout,
+                )
+            else:
+                exit_code, output = _exec_capture(
+                    container_name, agent_cmd, timeout=args.timeout,
+                )
+            elapsed = time.monotonic() - start_time
 
-        logger.info(
-            "%s agent finished in %.0fs (exit code %d)",
-            ACTIVE_AGENT, elapsed, exit_code,
-        )
+            if _usage_tracker:
+                _usage_tracker.log_usage("transplant", output, getattr(args, "model", None))
+
+            logger.info(
+                "%s agent finished in %.0fs (exit code %d)",
+                ACTIVE_AGENT, elapsed, exit_code,
+            )
 
         # --- Save output ---
         output_dir = DATA_DIR / "bug_transplant" / f"{args.project}_{args.bug_id}"
         os.makedirs(output_dir, exist_ok=True)
 
-        if codex_mode == "interactive":
+        if minimize_only:
+            # Keep the original transplant transcript; this run produced none.
+            pass
+        elif codex_mode == "interactive":
             # TUI output captured via tmux pipe-pane (includes ANSI codes)
             (output_dir / "agent_output_tui.txt").write_text(output)
         else:
@@ -1456,10 +1546,14 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                 f"find {repo_dir_q} -name '{fuzzer}' -type f -executable -delete; "
                 f"rm -f /out/{fuzzer}",
             )
+            # 300s suits the normal flow, where the agent has already built
+            # the tree and this rebuild is incremental. In --minimize-only
+            # mode the tree was just cleaned, so this is the cold build and
+            # needs the full budget (libredwg alone takes ~540s).
             ret_build, build_out = _exec_capture(
                 container_name,
                 "sudo -E compile 2>&1",
-                timeout=300,
+                timeout=_VERIFY_BUILD_TIMEOUT,
             )
             if ret_build != 0:
                 logger.error("Official compile failed after agent run")
@@ -1537,6 +1631,11 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
 
                 # --- Phase 2: Minimization (resume transplant session) ---
                 logger.info("=== Minimization phase ===")
+                # Clear verdict markers from an earlier attempt so a re-run
+                # (notably --minimize-only) cannot leave this bug looking
+                # failed after it has just succeeded.
+                for stale in ("minimize_failed.txt", "minimize_unverified.txt"):
+                    (output_dir / stale).unlink(missing_ok=True)
                 # Snapshot the verified, not-yet-minimized patch so the
                 # minimizer's effect can be inspected afterwards.
                 premin_path = output_dir / "bug_transplant_premin.diff"
@@ -1591,6 +1690,15 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                     mode=codex_mode,
                     resume_session=transplant_session_id,
                 )
+                # Must run in the repo, exactly like the transplant call
+                # above. Without this the agent starts in the image WORKDIR
+                # (/src), opencode bootstraps an instance there and then a
+                # second, nested one for the resumed session's project --
+                # and `--auto` no longer answers the nested instance's
+                # permission prompts. The minimizer then blocks forever on
+                # the first access outside /src (e.g. /out/llvmfuzz) until
+                # the budget kills it with exit 124.
+                minimize_cmd = _container_in_dir(repo_dir, minimize_cmd)
                 min_start = time.monotonic()
                 if codex_mode == "interactive":
                     min_exit, min_output = _exec_interactive(
@@ -1665,10 +1773,15 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                     f"find {repo_dir_q} -name '{fuzzer}' -type f -executable -delete; "
                     f"rm -f /out/{fuzzer}",
                 )
+                # Same budget as the pre-minimize rebuild: a minimizer that
+                # restored a build-generated file (e.g. libredwg's
+                # src/config.h.in) turns this into a full rebuild, which
+                # 300s cannot finish -- and a rebuild that silently timed
+                # out leaves no fuzzer binary for the re-run below.
                 ret_rebuild, _ = _exec_capture(
                     container_name,
                     "sudo -E compile 2>&1",
-                    timeout=300,
+                    timeout=_VERIFY_BUILD_TIMEOUT,
                 )
                 if ret_rebuild != 0:
                     logger.warning("Post-minimize rebuild failed")
@@ -1710,7 +1823,19 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                         f"/work/{testcase} 2>&1",
                         timeout=120,
                     )
-                    crash_out_path.write_text(fuzz_out2)
+                    # Only replace the verified pre-minimize crash log with
+                    # something that is itself a crash. If the rebuild above
+                    # failed, this run is a shell error ("/out/llvmfuzz: No
+                    # such file or directory") and overwriting would destroy
+                    # the reference stack that FuzzBench triage reads.
+                    if "ERROR: AddressSanitizer" in (fuzz_out2 or ""):
+                        crash_out_path.write_text(fuzz_out2)
+                    else:
+                        logger.warning(
+                            "Post-minimize re-run produced no ASan crash; "
+                            "keeping the pre-minimize crash log. tail=%.200s",
+                            (fuzz_out2 or "(empty)")[-200:],
+                        )
                 else:
                     logger.warning("Post-minimize verification FAILED — "
                                    "keeping pre-minimize diff")
@@ -2104,6 +2229,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Enforce the verification gate: a diff whose "
                              "crash stack does not match the reference is "
                              "discarded and the bug is marked failed.")
+    parser.add_argument("--skip-image-build", action="store_true",
+                        help="Trust that the project and agent Docker images "
+                             "are already current (bug_transplant_batch.py "
+                             "builds them once per run) instead of re-running "
+                             "build_version per bug. Falls back to building if "
+                             "either image is missing.")
+    parser.add_argument("--minimize-only", action="store_true",
+                        help="Skip the transplant agent: re-apply the saved "
+                             "bug_transplant.diff (and its saved testcase) to "
+                             "a clean tree, verify it, then run only the "
+                             "minimization pass. Use to re-minimize bugs whose "
+                             "minimizer failed; the original transplant "
+                             "transcript is left untouched.")
 
     # Agent
     parser.add_argument("--agent", choices=["codex", "opencode"],
@@ -2221,10 +2359,34 @@ def main() -> int:
     # reference crash log. That mismatch is the layout-drift source of
     # "bug triggers in transplant container but nowhere else" outcomes.
     logger.info("=== Phase 1: Building Docker images ===")
-    project_image = build_project_image(
-        args.project, args.target_commit, args.build_csv,
-    )
-    agent_image = build_agent_image(args.project, project_image)
+    if getattr(args, "skip_image_build", False):
+        # bug_transplant_batch.py builds both images once at startup, for the
+        # same project and target commit.  Repeating it per bug costs ~9min of
+        # pure wall-clock (build_version re-runs the project build even when
+        # the image is current) and cannot change the result.
+        project_image = f"gcr.io/oss-fuzz/{args.project}"
+        agent_image = f"bug-transplant-{args.project}:latest"
+        missing = [
+            tag for tag in (project_image, agent_image)
+            if subprocess.call(["docker", "image", "inspect", tag],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL) != 0
+        ]
+        if missing:
+            logger.warning("--skip-image-build: %s absent; building after all",
+                           ", ".join(missing))
+            project_image = build_project_image(
+                args.project, args.target_commit, args.build_csv,
+            )
+            agent_image = build_agent_image(args.project, project_image)
+        else:
+            logger.info("Skipping image build (--skip-image-build): reusing %s",
+                        agent_image)
+    else:
+        project_image = build_project_image(
+            args.project, args.target_commit, args.build_csv,
+        )
+        agent_image = build_agent_image(args.project, project_image)
 
     # ------------------------------------------------------------------
     # Phase 2+3: Run Codex in container
