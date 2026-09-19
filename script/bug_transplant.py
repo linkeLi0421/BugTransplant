@@ -397,6 +397,11 @@ def load_setenv_defaults(*names: str) -> dict[str, str]:
         value = raw.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
+        # setenv.sh anchors the in-repo dataset paths on $REPO_ROOT, which is
+        # a shell-local there and so absent from os.environ -- expandvars would
+        # leave it literal and hand the caller a path that does not exist.
+        value = value.replace("$REPO_ROOT", str(HOME_DIR)).replace(
+            "${REPO_ROOT}", str(HOME_DIR))
         value = os.path.expandvars(os.path.expanduser(value))
         if value:
             os.environ[name] = value

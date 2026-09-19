@@ -1,0 +1,43 @@
+%!PS
+%   Postscript that uses Ghostscript extensions to do simple transparency
+
+/PageUsesTransparency true def
+
+systemdict /.setalphaisshape known not
+{
+    (\n\n Transparency operations ignored - probably due to using -dSAFER\n\n) print flush
+    /.puthpdf14devicefilter {pop} bind def
+    /.begintransparencygroup {pop pop pop pop pop} bind def
+    /.endtransparencygroup {} bind def
+    /.poppdf6935400devicefilter {} bind def
+    /.setopacityalpha {pop} bind def
+    /.setshapea def
+} if
+
+
+<<
+   /PageUsesTransparency PageUsesTransparency	% needed if we are using transparency
+   /CompatibilityLevel 1.4
+   /PageSite
+
+% work around rectfill mapping directly to device fill_rectangle
+/rectfill {
+  gsave 4 2 roll moveto 1 index 0 rlineto
+  0 exch rlineto neg 0 rlineto closepath fill grestore
+} bind def
+
+0 .pushpdf14devicefilter % in case we are going to pdfwrite
+
+% work around rectfill mapping directly to device fill_rectangle
+/rectfill {
+  gsave 4 2 roll moveto 1 index 0 rlineto
+  0 exch rlineto neg 0 rlineto closepath fill grestore
+} bind def
+
+0 .pushpdf14devicefilter % depth .pushpdf14devicefilter -
+
+     100 200 500 500 rectfill
+
+     .endtransparencygroup
+.poppdf14devicefilter
+showpage

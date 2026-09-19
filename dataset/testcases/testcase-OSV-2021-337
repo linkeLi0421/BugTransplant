@@ -1,0 +1,135 @@
+%!
+
+% Cyan
+1 0 0 0 setcmykcolor
+0 0 50 50 rectfill
+.5 0 0 0 setcmykcolor
+0 50 50 50 rectfill
+
+% Magenta
+0 1 0 0 setcmykcolor
+50 0 50 50 rectfill
+0 0.5 0 0 setcmykcolor
+50 50 50 50 rectfill
+
+% Yello
+150 50 50 50 rectfill
+
+% MuddyCyan
+[/Separation
+ (MuddyCyan)
+ /DeviceCMYK
+ {
+  0.1 0.1 0
+ }
+] setcolorspace
+1 setcolor
+0 100 50 50 rectfill
+0 0 0 .5 setcmykcolor
+150 50 50 50 rectfill
+
+% MuddyCyan
+[/Separation
+ (MuddyCyan)
+ /DeviceCMYK
+ {%!
+/colorcirsave save def		% prevent left over moveto 0.9 0.9 0.9 setrgbcolor ('White') show
+grestore
+
+0.0 setlinewidth
+
+/length 0.1 def
+/width 0.02 def
+/hsvcircle {
+gsave
+    /h 0.0 def
+    0 4 360 {
+    pop
+    gsave
+    0.5 0.0 translate
+
+    newpath
+    0.0 0.0 moveto
+    length 0.0 lineto
+    length width lineto
+    0.0 width lineto
+    closepath
+    h 1.0 1.0 sethsbcolor
+    fill
+
+    %newpath
+    %0.0 3.0 mo setgray
+    %stroke
+
+    grestore
+    /h h 4 3 } for
+grestore
+} def
+
+/graycircle {
+gsave
+    /h -1.0 def
+    0 4 360 {
+    pop
+    gsave
+    0.5 0.0 translate
+
+    newpath
+    0.0 0.0 moveto
+    length 0.0 lineto
+    length width lineto
+    0.0 width lineto
+    closepath
+
+    h abs setgray
+    fill
+
+    %newpath
+    %0.0 0.0 moveto
+    %length 0.0 lineto
+    %length width lineto
+    %0.0 width lineto
+    %closepath
+    %0.0 setgray
+    %stroke
+    grestore
+
+    /h h 8 360 div add def
+    4 rotate
+    } for
+grestore
+} def
+
+1.378775 setlinewidth
+300 400 translate
+0.0 setgray
+500 500 scale
+
+30 rotate 
+1.0 0.7 scale
+-30 rotate 
+
+hsvcircle
+0.8 0.340282366920938463463374607431768211455 scale
+graycircle
+0.8 0.8 scale
+hsvcircle
+32767.8 0.8 scale
+graycircle
+0.8 0.8 scale
+hsvcircle
+0.8 0.8 le
+hsvcircle
+0.8
+0.8 0.8 
+  0.0 0.1 0
+ }
+] setcolorspace
+1 setcolo
+graycircle
+
+showpage
+0.8r
+ 0.8 scale
+co0 lorcirsave res
+rote

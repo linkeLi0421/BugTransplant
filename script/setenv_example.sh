@@ -1,17 +1,30 @@
 #!/bin/bash
-# Python interpreter path (defaults to system python3 if not set)
-export LOG_PATH="/home/user/log"
-export STORAGE_PATH="/mnt/nas/linke"
-export TESTCASES="/home/user/oss-fuzz-for-select/pocs/tmp"
+# Copy to setenv.sh and adjust the two external paths at the bottom.
+#
+#   source script/setenv.sh
+#
+# Everything the pipeline reads now lives in dataset/ inside this repo, so the
+# data variables below need no editing.
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ---- in-repo data (dataset/, see dataset/README.md) ------------------------
+export TESTCASES="$REPO_ROOT/dataset/testcases"
+export BUGINFO_PATH="$REPO_ROOT/dataset/osv_testcases_summary.json"
+export BUGIDS_PATH="$REPO_ROOT/dataset/osv_projects.json"
+
+# Where buildAndtest.py writes the bug matrices it generates. Point it at
+# dataset/csv/per_target to regenerate them in place.
+export LOG_PATH="$REPO_ROOT/log"
+
+# ---- external, not vendored ------------------------------------------------
+# Git clones of the target projects, checked out per commit during transplant.
 export REPO_PATH="/home/user/tasks-git"
-export DATA_PATH="/home/user/data"
-# Separate repo paths for V1 (old commit) and V2 (new commit) source trees
-# These are used by the react agent to read source code from both versions
-export V1_REPO_PATH="/home/user/tasks-git-v1"
-export V2_REPO_PATH="/home/user/tasks-git-v2"
-export GUMTREE_PATH="/home/user/gumtree-4.0.0-beta4/bin/gumtree"
-export BUGIDS_PATH="/home/user/oss-fuzz-for-select/osv_projects.json"
-export BUGINFO_PATH="/home/user/oss-fuzz-for-select/osv_testcases_summary.json"
-# Number of parallel jobs for multi-agent runs (reduce to avoid OOM)
-# Each agent uses ~1.6GB RAM + Docker build uses ~4GB
-export REACT_AGENT_JOBS=10
+# Cache for built fuzzer binaries, keyed <project>-<commit>-<sanitizer>.
+# Large; keep it off the repo.
+export STORAGE_PATH="/mnt/nas/linke"
+
+# ---- optional --------------------------------------------------------------
+# Agent credentials. Codex/opencode authenticate via their own mounted config;
+# set this only for a provider that wants a key in the environment.
+# export OPENAI_API_KEY=...

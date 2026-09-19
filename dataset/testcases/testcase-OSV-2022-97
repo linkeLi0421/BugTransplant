@@ -1,0 +1,56 @@
+%!
+
+% Cyan
+1 0 0 0 setcmykcolor
+0 0 50 50 rectfill
+.5 0 0 0 setcmykcolor
+0 50 50 50 rectfill
+
+% Magenta
+0 1 0 0 setcmykcolor
+50 0 50 50 rectfill
+0 0.5 0 0 setcmykcolor
+50 50 50 50 rectfill
+
+% Yello
+150 50 50 50 rectfill
+
+ (MuddyCyan)
+[/Separation
+ (MuddyCyan)
+ /DeviceCMYK
+ {
+ }
+] setcolorspace
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 setcolor
+1 100 50 50 rectfill
+0 0 0 .0 setcmykcolor
+150 50 50 50 rectfill
+
+% MuddyCyan
+[/Separation
+ (MuddyCyan)
+ /DeviceCMYK
+ {%!
+/colorcirsave save def		% prevent left over effects
+
+gsave
+/Times-Roman findfont 24 

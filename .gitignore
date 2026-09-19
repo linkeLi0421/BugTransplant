@@ -25,3 +25,8 @@ llvm_build_dirs
 /fuzzbench-output
 
 /script/setenv.sh
+# The self-contained dataset: per-target bug matrices, build maps, PoCs and
+# OSV metadata. The blanket *.json above would otherwise drop the metadata.
+!dataset/
+!dataset/**
+!dataset/*.json
