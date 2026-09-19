@@ -51,7 +51,29 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from bug_verify import extract_sanitizer_class  # noqa: E402
-from sideeffect.duplication_report import extract_frames  # noqa: E402
+# Inlined from the retired script/sideeffect/duplication_report.py, which went
+# with the bitmask-dispatch attribution family; this is the only piece of it
+# RQ3 validity classification needs.
+_FRAME_RE = re.compile(
+    r"^\s*#\d+\s+0x[0-9a-fA-F]+\s+in\s+(.+?)\s+(/src/[^:\n]+)(?::(\d+))?",
+    re.MULTILINE,
+)
+_PROJECT_FILE_PREFIX = "/src/"
+
+
+def extract_frames(stacktrace: str) -> list[tuple[str, str, int | None]]:
+    """Return list of (function, file, line) from ASAN frames, project source only."""
+    frames: list[tuple[str, str, int | None]] = []
+    for m in _FRAME_RE.finditer(stacktrace or ""):
+        func = m.group(1).strip()
+        filepath = m.group(2).strip()
+        line = int(m.group(3)) if m.group(3) else None
+        if not filepath.startswith(_PROJECT_FILE_PREFIX):
+            continue
+        rel = "/".join(filepath.split("/")[3:])  # strip "/src/<proj>/"
+        frames.append((func, rel, line))
+    return frames
+
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +124,7 @@ def _is_infra(func: str, path: str) -> bool:
 # The line/column suffix is OPTIONAL on purpose: translation units built
 # without line info emit "<func> /src/proj/file.c" with no ":<line>", and
 # dropping those frames silently mistakes a *caller* for the fault site.
-# (Same defect as `fuzzbench_triage.parse_stacktrace_frames`; see
+# (Same defect the retired fuzzbench_triage.parse_stacktrace_frames had; see
 # two_level_attribution_plan.md threat T5.)
 _FRAME_RE = re.compile(
     r"^\s*#\d+\s+(0x[0-9a-fA-F]+)\s+in\s+(.+?)\s+(\S+?)(?::(\d+))?(?::\d+)?\s*$",

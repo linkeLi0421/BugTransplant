@@ -16,7 +16,7 @@ If the zeroed variant still crashes, slot *N* was not the cause: the crash is
 an **ungated** one that merely wore that bug's dispatch byte.  If it goes
 quiet, the crash is consistent with the gated bug being the cause.
 
-Repetition is asymmetric, the same way ``ungated_replay.py`` treats it.  A
+Repetition is asymmetric.  A
 crash is proof and stops immediately; a quiet run proves nothing on its own, so
 the zeroed variant is retried ``--attempts`` times before it is called gated.
 

@@ -14,12 +14,19 @@ Usage:
         --fuzzer aflplusplus libfuzzer --run-time 86400 --trials 5 \
         --experiment-name transplant-opensc-5t
 
-    # After experiment, triage:
-    python3 script/fuzzbench_triage.py \
-        --experiment-dir <experiment_filestore>/<experiment-name> \
+    # After the experiment, attribute crashes by their dispatch head byte
+    # (add --snapshot-period if the campaign did not use the 900s default):
+    python3 script/headbyte_triage.py \
+        --experiment-dir <experiment_filestore>/<experiment-name>/experiment-folders \
         --bug-metadata fuzzbench/benchmarks/opensc_transplant_fuzz_pkcs15_reader/bug_metadata.json \
-        --benchmark opensc_transplant_fuzz_pkcs15_reader \
         --output results.csv
+
+    # Then keep only the crashes that actually need that byte:
+    python3 script/dispatch_zero_replay.py \
+        --experiment-dir <experiment_filestore>/<experiment-name>/experiment-folders \
+        --bug-metadata fuzzbench/benchmarks/opensc_transplant_fuzz_pkcs15_reader/bug_metadata.json \
+        --image gcr.io/fuzzbench/runners/libfuzzer/opensc_transplant_fuzz_pkcs15_reader:latest \
+        --target /out/fuzz_pkcs15_reader --out <outdir>
 """
 
 import argparse
@@ -173,12 +180,19 @@ def main():
     logger.info("Experiment complete: %s", experiment_filestore)
     bug_metadata = fuzzbench_dir / "benchmarks" / args.benchmark / "bug_metadata.json"
     logger.info("")
-    logger.info("Run triage:")
-    logger.info("  python3 script/fuzzbench_triage.py \\")
-    logger.info("    --experiment-dir %s \\", experiment_filestore)
+    logger.info("Attribute crashes by dispatch head byte:")
+    logger.info("  python3 script/headbyte_triage.py \\")
+    logger.info("    --experiment-dir %s/experiment-folders \\", experiment_filestore)
     logger.info("    --bug-metadata %s \\", bug_metadata)
-    logger.info("    --benchmark %s \\", args.benchmark)
     logger.info("    --output results.csv")
+    logger.info("")
+    logger.info("Then keep only crashes that need that byte:")
+    logger.info("  python3 script/dispatch_zero_replay.py \\")
+    logger.info("    --experiment-dir %s/experiment-folders \\", experiment_filestore)
+    logger.info("    --bug-metadata %s \\", bug_metadata)
+    logger.info("    --image gcr.io/fuzzbench/runners/libfuzzer/%s:latest \\",
+                args.benchmark)
+    logger.info("    --target /out/<fuzz_target> --out <outdir>")
 
 
 if __name__ == "__main__":

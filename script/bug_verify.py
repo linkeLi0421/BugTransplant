@@ -130,7 +130,7 @@ def crash_stacks_match_strict(orig_text: str, new_text: str) -> bool:
     """Stricter same-bug oracle: cleaned first-project-frame matching.
 
     Reuses the verdict logic in ``script/rq3_validity.py`` (which itself is
-    pure glue over the helpers in this module + ``sideeffect.duplication_report``).
+    pure glue over the helpers in this module).
 
     Treats verdicts ``exact`` and ``partial`` as a match — same first project
     frame after stripping sanitizer / libFuzzer / libc infrastructure and
