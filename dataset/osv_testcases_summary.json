@@ -111,6 +111,38 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=18742"
  },
+ "OSV-2020-1075": {
+  "fixed": "287015ffdc33ff2c212563ffb866b38dee64e12b",
+  "introduced": "b2cbe76e716e628438a94d2e112acddb67ec89f2",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5638243526901760",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21349"
+ },
+ "OSV-2020-1082": {
+  "fixed": "a845e997209b987ef85a2562697d4d0522cb0c66",
+  "introduced": "b2cbe76e716e628438a94d2e112acddb67ec89f2",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5639293579296768",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21296"
+ },
  "OSV-2020-1112": {
   "fixed": "c223bb1f10068c00aaf9e9c96709dc3984a969cb",
   "introduced": "e695dd6eade754b2d50bdf297ca8bdc4105f93ff",
@@ -223,6 +255,54 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=20563"
  },
+ "OSV-2020-12": {
+  "fixed": "38e4910636bd6273b62e0b195c9d45483c39cc1a",
+  "introduced": "cd765c08d6f1038ea5efd7a7cc556ca89bdec9e4",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5079402106060800",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23058"
+ },
+ "OSV-2020-122": {
+  "fixed": "db16a987c57c2fa097b5efabb66cef16caeddb03",
+  "introduced": "4148c5e065d32128eea17c0e228e372ad72eef82",
+  "reproduce": {
+   "crash_address": "0x6040000002b8",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5681891455008768",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22022"
+ },
+ "OSV-2020-1222": {
+  "fixed": "39acb9583128ede53d0562a8055786cec0e5ab40",
+  "introduced": "dd6f0b72c92591252bb77818663629cc1a129949",
+  "reproduce": {
+   "crash_address": "0x000000010000",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5711296702185472",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=20473"
+ },
  "OSV-2020-1233": {
   "fixed": "6d7f3976f33b0d4fbbece60d6b7d549b13107674",
   "introduced": "e695dd6eade754b2d50bdf297ca8bdc4105f93ff",
@@ -286,6 +366,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22231"
+ },
+ "OSV-2020-1314": {
+  "fixed": "a845e997209b987ef85a2562697d4d0522cb0c66",
+  "introduced": "b2cbe76e716e628438a94d2e112acddb67ec89f2",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5762511392735232",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21309"
  },
  "OSV-2020-136": {
   "fixed": "7a2bcd9c395f9fe554109e04add33e9e65564d82",
@@ -351,6 +447,54 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=24576"
  },
+ "OSV-2020-166": {
+  "fixed": "d318285caec168b2b8a813845ae7b93b7e078aa3",
+  "introduced": "cd765c08d6f1038ea5efd7a7cc556ca89bdec9e4",
+  "reproduce": {
+   "crash_address": "0x60f0000003b9",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5726505366978560",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22498"
+ },
+ "OSV-2020-171": {
+  "fixed": "38e4910636bd6273b62e0b195c9d45483c39cc1a",
+  "introduced": "cd765c08d6f1038ea5efd7a7cc556ca89bdec9e4",
+  "reproduce": {
+   "crash_address": "0x6100000001fa",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5731163196096512",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23396"
+ },
+ "OSV-2020-1712": {
+  "fixed": "6dbcee4e0b4868843938233eb2c37c927f674d69",
+  "introduced": "6153b859d1fd3780cb95d20f678843ab1ba470a1",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5066826881695744",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25463"
+ },
  "OSV-2020-1715": {
   "fixed": "37abe0daea8c964dbd2e09058074bfc7ae053199",
   "introduced": "239842b821763a2afc62d859a186f673ba09b171",
@@ -367,6 +511,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25446"
  },
+ "OSV-2020-1717": {
+  "fixed": "53a5c354d833770196852ee94b0abefb73ffd8b8",
+  "introduced": "7a1147d733dc2a43c375207747e8c4587af83388",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4854142840078336",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25468"
+ },
  "OSV-2020-1720": {
   "fixed": "8dd136ac240580b63ce509a1379a109026b93b5e",
   "introduced": "b02da8348be97d4b24081783f6af46757373bc3e",
@@ -382,6 +542,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25473"
+ },
+ "OSV-2020-1729": {
+  "fixed": "1c0e617d802d214b0186f2752b50b8ee2a9e17a6",
+  "introduced": "ea4240055d5301b52d9fa934b8d14c126375eb17",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5641543770439680",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25545"
  },
  "OSV-2020-1733": {
   "fixed": "8bab82bdb8c2613e1ca7bd5573d7c12117a2dc02",
@@ -479,6 +655,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=20162"
  },
+ "OSV-2020-1827": {
+  "fixed": "b70ad0e2f19aa1d6f4b3b64208e14c6e5839d60a",
+  "introduced": "753b5dde16bae60299ca8e31afb4f519b13629c1",
+  "reproduce": {
+   "crash_address": "0x61a000000b80",
+   "crash_type": "Heap-buffer-overflow READ {*}",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5108457907421184",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25845"
+ },
  "OSV-2020-1836": {
   "fixed": "595926471b034fe4b518af722b2e1fae4ed6c450",
   "introduced": "508f8a9fced369f60e6f0c0f62176ea9427fbf42",
@@ -559,6 +751,102 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=25998"
  },
+ "OSV-2020-1869": {
+  "fixed": "87688cd48fb52c305e159b785bd184232426a766",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5109631614713856",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21625"
+ },
+ "OSV-2020-1870": {
+  "fixed": "0ae681ab1fd3475995418d00da1ccfe374f069cc",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5170403420143616",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22752"
+ },
+ "OSV-2020-1871": {
+  "fixed": "d703f355af5292e61dcd641332e249873ab5fb8a",
+  "introduced": "bd73d0c1d0c42fd1671b56f1277b5e9f25391907",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5631964637036544",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21416"
+ },
+ "OSV-2020-1872": {
+  "fixed": "9e85e7a9518aa19964f1f8d30d3175ef8c3b950f",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5645873112678400",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21643"
+ },
+ "OSV-2020-1873": {
+  "fixed": "0339cbecea80d8a835b316b56d1c75a6fb850e52",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5646279408615424",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23440"
+ },
+ "OSV-2020-1874": {
+  "fixed": "889df15d7c69e1fc90c6491f574352cacf9bc065",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5668538569457664",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22182"
+ },
  "OSV-2020-1875": {
   "fixed": "5fc8e7c0b656d4e2be8f5e316121f06039c35273",
   "introduced": "f35924926cb35f08be5a12ded4a00eb2f42aed3e",
@@ -591,6 +879,102 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22007"
  },
+ "OSV-2020-1877": {
+  "fixed": "0ae681ab1fd3475995418d00da1ccfe374f069cc",
+  "introduced": "560ff82b0bc782465aa4591b2953954d7cf5608c",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5704898518974464",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23115"
+ },
+ "OSV-2020-1878": {
+  "fixed": "ebabebad34a3811230b7bfe351eface7f5efc8a9",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5705537925939200",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21616"
+ },
+ "OSV-2020-1879": {
+  "fixed": "b503c46c124cf5aaa82a71e28f624f2ef2b71e71",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5730542504116224",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21621"
+ },
+ "OSV-2020-1880": {
+  "fixed": "d12d2085b5bd08ca1e813d97f3f7f7e630e791a0",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5733777335910400",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21640"
+ },
+ "OSV-2020-1882": {
+  "fixed": "b503c46c124cf5aaa82a71e28f624f2ef2b71e71",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5749745906876416",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21617"
+ },
+ "OSV-2020-1883": {
+  "fixed": "825d6807a72b68a2faf11fc37f89b1b75967d727",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5769684738899968",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22225"
+ },
  "OSV-2020-1884": {
   "fixed": "5f7b9d802498215f5769a8bfa39d92356da2cfdd",
   "introduced": "4a09b4efa053a26e187119a540da4b41dd8a24d8",
@@ -606,6 +990,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=26015"
+ },
+ "OSV-2020-1886": {
+  "fixed": "87688cd48fb52c305e159b785bd184232426a766",
+  "introduced": "668917a10e7eada030f7d2dddec9f579fddeed3d",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6257668319870976",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21622"
  },
  "OSV-2020-194": {
   "fixed": "c6acf97bfbe5ad26db3c2f5dd4d379ac674d6fb3",
@@ -735,6 +1135,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=27812"
  },
+ "OSV-2020-2206": {
+  "fixed": "0fceb6576aeb76b78ad9c19c86830fba694cfd5d",
+  "introduced": "7a1147d733dc2a43c375207747e8c4587af83388",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4802733043089408",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=27988"
+ },
  "OSV-2020-2222": {
   "fixed": "f015746d22d249642c19674298a18ad824db0ed7",
   "introduced": "b02da8348be97d4b24081783f6af46757373bc3e",
@@ -751,6 +1167,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=28185"
  },
+ "OSV-2020-2251": {
+  "fixed": "aefd3829af33a7814f76137838d741fd7b1058d4",
+  "introduced": "933c0c455c91da06604163f533e9a2084cd2f6ca",
+  "reproduce": {
+   "crash_address": "0xf2801e1c",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5131542452109312",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=28392"
+ },
  "OSV-2020-2254": {
   "fixed": "5df913b7f57ad89b9832555d24c08d23a534311e",
   "introduced": "9ffb9bae63c8b7fbababb8481a83f1b575e59a18",
@@ -766,6 +1198,38 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=28383"
+ },
+ "OSV-2020-2276": {
+  "fixed": "fe6864c5f3ba9085acdac569b7567b911e01f445",
+  "introduced": "9ffb9bae63c8b7fbababb8481a83f1b575e59a18",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Negative-size-param",
+   "fuzz_target": "fuzz_pkcs15_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_opensc",
+   "platform_id": "linux",
+   "project": "opensc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6280582086656000",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=28768"
+ },
+ "OSV-2020-2298": {
+  "fixed": "68b6ac7da8b2f3c5f0ffa3f29015eefaa37e1ff5",
+  "introduced": "32bd3d7a599a6dfcfadf6ed4ad684f904e50719c",
+  "reproduce": {
+   "crash_address": "0x0606060605fe",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5752952522407936",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29081"
  },
  "OSV-2020-236": {
   "fixed": "812505b56bb4508bc42e1615d6425ad26444d3f8",
@@ -799,6 +1263,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=20089"
  },
+ "OSV-2020-245": {
+  "fixed": "6a9f5e4f7c3fd5ddab3e6727b071904d76773952",
+  "introduced": "374a24a1fb373617be23d7cbb397b47d23a5ffda",
+  "reproduce": {
+   "crash_address": "0x62b000012b9a",
+   "crash_type": "Heap-use-after-free READ 3",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5716128734380032",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23046"
+ },
  "OSV-2020-28": {
   "fixed": "90e08b3568d8963a459cf06c4e67ff6fc99298e3",
   "introduced": "5c52c00ea4ad8afaebd5259bc53215a1ab41569f",
@@ -831,6 +1311,54 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=19175"
  },
+ "OSV-2020-366": {
+  "fixed": "249e9281761fc861bab93f76baf6cdcefb1774ee",
+  "introduced": "7a1e42e1352201127d1a97b6cb5f41e48cace0f5",
+  "reproduce": {
+   "crash_address": "0x0000024ca004",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "fuzz_pkcs15_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_opensc",
+   "platform_id": "linux",
+   "project": "opensc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5178586395049984",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=19039"
+ },
+ "OSV-2020-39": {
+  "fixed": "29d9c2d2c80289f31278f8717959a5718a2e6ce1",
+  "introduced": "374a24a1fb373617be23d7cbb397b47d23a5ffda",
+  "reproduce": {
+   "crash_address": "0x62b00000fbf3",
+   "crash_type": "Heap-use-after-free READ 1",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5150034495799296",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22899"
+ },
+ "OSV-2020-4": {
+  "fixed": "46d96e7f32a799ae57400d82e4c485e4ef9771ab",
+  "introduced": "55364ef0b4ef629630a663dc7b05d83c1b662067",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4846815202770944",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23524"
+ },
  "OSV-2020-40": {
   "fixed": "e9195589d29d86da1849ad0d195900e6567354cf",
   "introduced": "10738a0ca334104377e19a1e683bd13f2451a9e2",
@@ -847,6 +1375,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=20766"
  },
+ "OSV-2020-452": {
+  "fixed": "7a1e42e1352201127d1a97b6cb5f41e48cace0f5",
+  "introduced": "61cd7fcdb2fdc9214b431abb631b202314dcc32f",
+  "reproduce": {
+   "crash_address": "0x000000df01ff",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "fuzz_pkcs15_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_opensc",
+   "platform_id": "linux",
+   "project": "opensc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5654731460706304",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=18611"
+ },
  "OSV-2020-49": {
   "fixed": "4f370fe7c49cb38125cff2a1411261011e433c94",
   "introduced": "7234f369499e02f44efcbbf0efe43bae596ddc53",
@@ -862,6 +1406,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21365"
+ },
+ "OSV-2020-525": {
+  "fixed": "7a1e42e1352201127d1a97b6cb5f41e48cace0f5",
+  "introduced": "6810eb6cf13f97ff20c5c68f49bef70ae977ddea",
+  "reproduce": {
+   "crash_address": "0x0000013a1000",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "fuzz_pkcs15_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_opensc",
+   "platform_id": "linux",
+   "project": "opensc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5681169970757632",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=18693"
  },
  "OSV-2020-55": {
   "fixed": "9d294de90d1cc66956389856e60b6944b27b4817",
@@ -1023,6 +1583,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22912"
  },
+ "OSV-2020-780": {
+  "fixed": "204f3ddff5efc929095556ed22ec62d18bef6324",
+  "introduced": "4a09b4efa053a26e187119a540da4b41dd8a24d8",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5174391532158976",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22676"
+ },
  "OSV-2020-795": {
   "fixed": "05dfae6430d34d66ea8e43084f5c12a9f3a6dc5d",
   "introduced": "9dfd0d0071845779487b4e2e14c3599e18a74a8c",
@@ -1103,6 +1679,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23834"
  },
+ "OSV-2020-875": {
+  "fixed": "6c366d73e27ab2097a197cd6d9870c1ca2457cc8",
+  "introduced": "4ec3e6c064b56f1434bd4c887bd96d0916d07f2e",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5739512943869952",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22475"
+ },
  "OSV-2020-885": {
   "fixed": "cdbcb5b7db8766d6ea9da6912755ed335780f2f9",
   "introduced": "43379b3b22f65f97a83de422f6a3b37fdfb2b138",
@@ -1119,6 +1711,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=23979"
  },
+ "OSV-2020-912": {
+  "fixed": "287015ffdc33ff2c212563ffb866b38dee64e12b",
+  "introduced": "b2cbe76e716e628438a94d2e112acddb67ec89f2",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4809256319844352",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21356"
+ },
  "OSV-2020-918": {
   "fixed": "17235d234eb6a55fd0753ab4f3b6fc8f66eb7659",
   "introduced": "e695dd6eade754b2d50bdf297ca8bdc4105f93ff",
@@ -1134,6 +1742,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21780"
+ },
+ "OSV-2020-919": {
+  "fixed": "287015ffdc33ff2c212563ffb866b38dee64e12b",
+  "introduced": "b2cbe76e716e628438a94d2e112acddb67ec89f2",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5112736746045440",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=21363"
  },
  "OSV-2020-92": {
   "fixed": "bbbc5fdbae79c72dbe157e02dfee4ef9f18014b5",
@@ -1167,6 +1791,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22342"
  },
+ "OSV-2020-955": {
+  "fixed": "dcd4b7304941a8832fba2d0fc4c1e716e7a4e72c",
+  "introduced": "dd6f0b72c92591252bb77818663629cc1a129949",
+  "reproduce": {
+   "crash_address": "0x7fe46ff161c0",
+   "crash_type": "UNKNOWN WRITE",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5755637137670144",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=24097"
+ },
  "OSV-2020-956": {
   "fixed": "bf7dcd63c3a663cd0e1e8c567511ccfd8047d24a",
   "introduced": "98d9f524f9ff7746d0345939fe543020f8057212",
@@ -1198,6 +1838,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=18152"
+ },
+ "OSV-2020-962": {
+  "fixed": "669b7579ff93eb22ccf9324fd19444754b5612b8",
+  "introduced": "b2cbe76e716e628438a94d2e112acddb67ec89f2",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5892941104283648",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22864"
  },
  "OSV-2020-969": {
   "fixed": "333c41c5d51450177553b8fd8cb2d710a7f7dec5",
@@ -1310,6 +1966,38 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=36200"
+ },
+ "OSV-2021-1081": {
+  "fixed": "",
+  "introduced": "6cd65db61b4285365b930adad85c0ca0c54a7dc4",
+  "reproduce": {
+   "crash_address": "0x6230000039a0",
+   "crash_type": "Heap-use-after-free READ 8",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5001924767252480",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=36714"
+ },
+ "OSV-2021-1476": {
+  "fixed": "c3d1c69722f31791ad718bfe3a265c0df22b9997",
+  "introduced": "4c00ff89dfa64f1026c2f1d267dc081a86b45243",
+  "reproduce": {
+   "crash_address": "0x60c0000005f9",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4562459038449664",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=40160"
  },
  "OSV-2021-1589": {
   "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
@@ -1630,6 +2318,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=42479"
+ },
+ "OSV-2021-1708": {
+  "fixed": "3ce8214d8fc77be42eb6ad618c972113d4cb0d24",
+  "introduced": "624ef6ae4bb802dff156681a1616c6a65fca39c1",
+  "reproduce": {
+   "crash_address": "0x00000000158f",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5231136421314560",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=42491"
  },
  "OSV-2021-1709": {
   "fixed": "9191f693bbfe5b70b91cb068d2fb38316aa0cc5e",
@@ -2063,6 +2767,38 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43680"
  },
+ "OSV-2021-1804": {
+  "fixed": "9dcc4a2334fa10d7d0a3c019ee35dfde4c06e044",
+  "introduced": "9ca62ed7acc3e10fe00d2d0e2c4e921948cda52c",
+  "reproduce": {
+   "crash_address": "0x606000196740",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5102630670565376",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43921"
+ },
+ "OSV-2021-1805": {
+  "fixed": "9dcc4a2334fa10d7d0a3c019ee35dfde4c06e044",
+  "introduced": "ed51987e3a4838dd9aef27dfab2c0651f2f52836",
+  "reproduce": {
+   "crash_address": "0x60e00000029d",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5357640692137984",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43925"
+ },
  "OSV-2021-1806": {
   "fixed": "bd747c5c2d320cd80ce08f16627c70a77ff67978",
   "introduced": "75fbddf52051987287e62d13c659eb73ba16982f",
@@ -2078,6 +2814,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44034"
+ },
+ "OSV-2021-207": {
+  "fixed": "aebf2b9858368681e497f136501ab33cc1014aed",
+  "introduced": "933c0c455c91da06604163f533e9a2084cd2f6ca",
+  "reproduce": {
+   "crash_address": "0xf2801dbd",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5107539828146176",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29613"
  },
  "OSV-2021-21": {
   "fixed": "c473b21cff5e1a459b4467f18bf7414114f848fd",
@@ -2127,6 +2879,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29280"
  },
+ "OSV-2021-220": {
+  "fixed": "a01a139ac1fa365a688ec8734d62ef859a8bc416",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x61100002b302",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4825968776708096",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29795"
+ },
  "OSV-2021-221": {
   "fixed": "98bb9e682481b934f65db1bbd73bc2c3a41f2931",
   "introduced": "c473b21cff5e1a459b4467f18bf7414114f848fd",
@@ -2143,6 +2911,86 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29816"
  },
+ "OSV-2021-222": {
+  "fixed": "a01a139ac1fa365a688ec8734d62ef859a8bc416",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x602000004c36",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6501633183842304",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29792"
+ },
+ "OSV-2021-228": {
+  "fixed": "90fef7300c75ca6b8834da0dcb710e27d599324e",
+  "introduced": "96c64aa1f56fdb724565d7a56798515d27cbb1f9",
+  "reproduce": {
+   "crash_address": "0x604000000840",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5196296807907328",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29837"
+ },
+ "OSV-2021-229": {
+  "fixed": "40afaaa5bf7e3f9cd6d6d9d9d8ae26496df82aea",
+  "introduced": "96c64aa1f56fdb724565d7a56798515d27cbb1f9",
+  "reproduce": {
+   "crash_address": "0x61d000001cf8",
+   "crash_type": "Heap-buffer-overflow WRITE 4",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5312888543772672",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29827"
+ },
+ "OSV-2021-23": {
+  "fixed": "28c392c59448389adfb1f8fd223da0acacfca301",
+  "introduced": "933c0c455c91da06604163f533e9a2084cd2f6ca",
+  "reproduce": {
+   "crash_address": "0x4bc31f1f",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5936592214687744",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29287"
+ },
+ "OSV-2021-231": {
+  "fixed": "90fef7300c75ca6b8834da0dcb710e27d599324e",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x61100002ba81",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5642821270896640",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29855"
+ },
  "OSV-2021-237": {
   "fixed": "7861fcad13c497728189feafb41cd57b5b50ea25",
   "introduced": "45e765e59a45b46dcb05e8c729689a7c0574a48c",
@@ -2158,6 +3006,38 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29903"
+ },
+ "OSV-2021-240": {
+  "fixed": "90fef7300c75ca6b8834da0dcb710e27d599324e",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x602000004d31",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6001864128724992",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29908"
+ },
+ "OSV-2021-242": {
+  "fixed": "9d9e60c83487a8ac4644079e9636e34a9dd4bb08",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x6070000000db",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4797759477645312",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29939"
  },
  "OSV-2021-246": {
   "fixed": "1a42fcd4473577cb8558b5609672a02388dabd39",
@@ -2190,6 +3070,38 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=29976"
+ },
+ "OSV-2021-251": {
+  "fixed": "8510a0d2a5ac878f1a4b9a6683580bcdfa9196d3",
+  "introduced": "96c64aa1f56fdb724565d7a56798515d27cbb1f9",
+  "reproduce": {
+   "crash_address": "0x60300000134d",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5102088579317760",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30012"
+ },
+ "OSV-2021-258": {
+  "fixed": "6568f13bf7b36f280a8f0e4777fe05c85a9dcf06",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x602000004c51",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5116014876557312",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30087"
  },
  "OSV-2021-262": {
   "fixed": "17d8980cde7be597afc366b7e311d0d7cadcb1f4",
@@ -2239,6 +3151,70 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30253"
  },
+ "OSV-2021-298": {
+  "fixed": "550e6fe6fcd96e507763db66873791b96f19fe2b",
+  "introduced": "753b5dde16bae60299ca8e31afb4f519b13629c1",
+  "reproduce": {
+   "crash_address": "0x61a000000b57",
+   "crash_type": "Heap-buffer-overflow READ {*}",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4666347638358016",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30389"
+ },
+ "OSV-2021-304": {
+  "fixed": "1ec621c85b9411cc611652fd57a892cfef478af3",
+  "introduced": "32bd3d7a599a6dfcfadf6ed4ad684f904e50719c",
+  "reproduce": {
+   "crash_address": "0x7ffe7ac81ff3",
+   "crash_type": "Stack-buffer-overflow WRITE 6",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4831031280664576",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30393"
+ },
+ "OSV-2021-305": {
+  "fixed": "56ac133b2fd4b41b2f05f8a3f30134fd79f7b31f",
+  "introduced": "0d1971cbebb269d90a563464e4f56987290e20ab",
+  "reproduce": {
+   "crash_address": "0x60b0000002be",
+   "crash_type": "Heap-buffer-overflow WRITE {*}",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4875963282358272",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30395"
+ },
+ "OSV-2021-312": {
+  "fixed": "141e5067e40d25ed3aa191589d4a325941efa57a",
+  "introduced": "0bd6877f480a84657696a80adc13f9c5485dd996",
+  "reproduce": {
+   "crash_address": "0x627000037800",
+   "crash_type": "Heap-use-after-free WRITE 4",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5674311224524800",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30487"
+ },
  "OSV-2021-337": {
   "fixed": "7861fcad13c497728189feafb41cd57b5b50ea25",
   "introduced": "4ab5dd6c004a252e64f26d6238799004f70d4a35",
@@ -2254,6 +3230,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30715"
+ },
+ "OSV-2021-366": {
+  "fixed": "1f79b650f75becece4a5346f49f29bea71daa72c",
+  "introduced": "c473b21cff5e1a459b4467f18bf7414114f848fd",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Negative-size-param",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5964915892420608",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30748"
  },
  "OSV-2021-369": {
   "fixed": "5a222cc79dc67ce01477da3a3ee10edf1076c655",
@@ -2271,6 +3263,38 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30761"
  },
+ "OSV-2021-371": {
+  "fixed": "5a222cc79dc67ce01477da3a3ee10edf1076c655",
+  "introduced": "57fca38a4f51687d71e451ae29df6b353764fb72",
+  "reproduce": {
+   "crash_address": "0xf4c030c6",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6686798023622656",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30772"
+ },
+ "OSV-2021-382": {
+  "fixed": "767a0d9302dce5d7467014cfd64f91a1b266e6d9",
+  "introduced": "ea4bf5d8341c4a861cd92eea0fb8331819a48f65",
+  "reproduce": {
+   "crash_address": "0xf5f02938",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5143072323272704",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30868"
+ },
  "OSV-2021-404": {
   "fixed": "969fb4cbb617801876fb5ddefc73778935ff1a56",
   "introduced": "5a222cc79dc67ce01477da3a3ee10edf1076c655",
@@ -2287,6 +3311,38 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=30974"
  },
+ "OSV-2021-422": {
+  "fixed": "e411d87705c65db2aafb0e774092fe57647fb31c",
+  "introduced": "969fb4cbb617801876fb5ddefc73778935ff1a56",
+  "reproduce": {
+   "crash_address": "0xf4c031c2",
+   "crash_type": "Heap-use-after-free READ 4",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6462229769748480",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31120"
+ },
+ "OSV-2021-428": {
+  "fixed": "cb44cf0fc82cf19efb002bba0eb5cc42e9527c3f",
+  "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
+  "reproduce": {
+   "crash_address": "0xf566836e",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5213605165400064",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31189"
+ },
  "OSV-2021-429": {
   "fixed": "cb44cf0fc82cf19efb002bba0eb5cc42e9527c3f",
   "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
@@ -2302,6 +3358,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31170"
+ },
+ "OSV-2021-439": {
+  "fixed": "cb44cf0fc82cf19efb002bba0eb5cc42e9527c3f",
+  "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
+  "reproduce": {
+   "crash_address": "0xff30381c",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6441498801471488",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31241"
  },
  "OSV-2021-464": {
   "fixed": "4f6d42ab4b25e781dad94c5324dab8a4dbb702ad",
@@ -2334,6 +3406,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31540"
+ },
+ "OSV-2021-476": {
+  "fixed": "4f6d42ab4b25e781dad94c5324dab8a4dbb702ad",
+  "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
+  "reproduce": {
+   "crash_address": "0xf616834e",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6279298358050816",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31556"
  },
  "OSV-2021-481": {
   "fixed": "4f6d42ab4b25e781dad94c5324dab8a4dbb702ad",
@@ -2398,6 +3486,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31657"
+ },
+ "OSV-2021-495": {
+  "fixed": "9b6e0ff9ef02818df034fc42c3bd149a5ff89342",
+  "introduced": "749923e4dfaf9b32e13282325decd78595a60c95",
+  "reproduce": {
+   "crash_address": "0x610000004e80",
+   "crash_type": "Heap-double-free",
+   "fuzz_target": "llvmfuzz",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_libredwg",
+   "platform_id": "linux",
+   "project": "libredwg",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5045674581295104",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=31724"
  },
  "OSV-2021-496": {
   "fixed": "cf02dfc992ae5544c92f69befc7093aacf168e77",
@@ -2575,6 +3679,54 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=33264"
  },
+ "OSV-2021-640": {
+  "fixed": "8a058b7a6be4d7e47a9af5831c454fca8c725dd4",
+  "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
+  "reproduce": {
+   "crash_address": "0xf290383d",
+   "crash_type": "Heap-buffer-overflow READ 6",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5361858753200128",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=33251"
+ },
+ "OSV-2021-644": {
+  "fixed": "b2434ad1be6ea46e101e0691bfd6b2a43174cc8a",
+  "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
+  "reproduce": {
+   "crash_address": "0xfe7acc67",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5002276038115328",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=33292"
+ },
+ "OSV-2021-652": {
+  "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
+  "introduced": "861ba79f31393dec0a0782ca11cf32cebb6f6610",
+  "reproduce": {
+   "crash_address": "0xf2714cb0",
+   "crash_type": "Heap-use-after-free READ 4",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5816652928253952",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=33324"
+ },
  "OSV-2021-668": {
   "fixed": "20610dc28ee3cf7e64ad46f11e9b96fb3befba00",
   "introduced": "e1a3956f252404f07d93be47f7845b23e4a2c4de",
@@ -2607,6 +3759,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=33862"
  },
+ "OSV-2021-766": {
+  "fixed": "ac7b9359e84d796bfb1ff1fd3f7c9eaf9a506799",
+  "introduced": "ce9aa2247006ed182dabb922bd3536b13375c4cf",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Negative-size-param",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5598950410289152",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=34259"
+ },
  "OSV-2021-771": {
   "fixed": "8bd75b4e2dfcb229e5121c3e45e5d284bf0d0477",
   "introduced": "cb74d5cf5bffc2a9dee8da43105d892f9a728777",
@@ -2622,6 +3790,38 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=34377"
+ },
+ "OSV-2021-779": {
+  "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
+  "introduced": "4a727370b1c2e9746434c00bf2236db86c31ea5c",
+  "reproduce": {
+   "crash_address": "0xf61682fb",
+   "crash_type": "Heap-buffer-overflow READ 8",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6208488536670208",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=34458"
+ },
+ "OSV-2021-784": {
+  "fixed": "ed51987e3a4838dd9aef27dfab2c0651f2f52836",
+  "introduced": "e2c3445a204c39c152bd3ae93a73f0cf2e57d286",
+  "reproduce": {
+   "crash_address": "0x61f000006008",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5231205151801344",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=34500"
  },
  "OSV-2021-803": {
   "fixed": "2a3129365d3bc0d4a41f107ef175920d1505d1f7",
@@ -2655,6 +3855,54 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=34766"
  },
+ "OSV-2021-847": {
+  "fixed": "1600817ed4961b13bbe6eed5f308c9abc78eee1e",
+  "introduced": "4d2510757d797781aed92193012294e7732afe9a",
+  "reproduce": {
+   "crash_address": "0x6100000001fc",
+   "crash_type": "Heap-buffer-overflow READ {*}",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5966065472503808",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=35086"
+ },
+ "OSV-2021-868": {
+  "fixed": "b0b3e1bc6c8db7cf8a2a26dbb29ffdb057d86121",
+  "introduced": "be808c30f3f4582009df4c5efccd4f3bb0c6ef1d",
+  "reproduce": {
+   "crash_address": "0x61100039283c",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4522242548563968",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=35288"
+ },
+ "OSV-2021-872": {
+  "fixed": "b0b3e1bc6c8db7cf8a2a26dbb29ffdb057d86121",
+  "introduced": "be808c30f3f4582009df4c5efccd4f3bb0c6ef1d",
+  "reproduce": {
+   "crash_address": "0x61100039283c",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6022144155844608",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=35300"
+ },
  "OSV-2021-897": {
   "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
   "introduced": "d1ea514286c47433dabcf47b11cf81d2248ca5bf",
@@ -2686,6 +3934,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=35766"
+ },
+ "OSV-2021-973": {
+  "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
+  "introduced": "4a727370b1c2e9746434c00bf2236db86c31ea5c",
+  "reproduce": {
+   "crash_address": "0xf5d03a6e",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5134776284610560",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=36093"
  },
  "OSV-2021-997": {
   "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
@@ -2767,6 +4031,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=52145"
  },
+ "OSV-2022-1022": {
+  "fixed": "3c0021d6036532a6fdff9196b7ee7a614bdbd525",
+  "introduced": "37c88b129f6f5a3475dc6364cc4a898df9ff37ab",
+  "reproduce": {
+   "crash_address": "0x7fff60546920",
+   "crash_type": "Stack-buffer-overflow READ {*}",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5487070584111104",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=52160"
+ },
  "OSV-2022-1025": {
   "fixed": "c4fb2a590e2648ee52641b3afe22157d2e9173d3",
   "introduced": "199c86e3df8da0b4734193df8424cd4a62768ae8",
@@ -2798,6 +4078,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=52229"
+ },
+ "OSV-2022-1055": {
+  "fixed": "de16fd35aa08ab584eaec487c02d31ad7a7a8942",
+  "introduced": "199c86e3df8da0b4734193df8424cd4a62768ae8",
+  "reproduce": {
+   "crash_address": "0x6080008c0000",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6638761324969984",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=52435"
  },
  "OSV-2022-1097": {
   "fixed": "28a4b16ec292d181b7227040dd47925e3b0949d9",
@@ -2862,6 +4158,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=53619"
+ },
+ "OSV-2022-120": {
+  "fixed": "79968f3245ae7bf277e01d8c5a28349b75d9ac74",
+  "introduced": "0dd5ac89f842ac37f4c36ff67620a49b9e7eb76f",
+  "reproduce": {
+   "crash_address": "0x6070000000d9",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5697473807515648",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44405"
  },
  "OSV-2022-1208": {
   "fixed": "f4bcc37667d82541eaf8a29e0b021fe1d7aa7b5b",
@@ -2991,6 +4303,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44481"
  },
+ "OSV-2022-149": {
+  "fixed": "30770fce40f0b47c4da1c41e187b45f9f59edc63",
+  "introduced": "4ef76e99d70f3f290120486434abeea24e7c6682",
+  "reproduce": {
+   "crash_address": "0x631000060830",
+   "crash_type": "Heap-buffer-overflow WRITE 8",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5635243070062592",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44610"
+ },
  "OSV-2022-177": {
   "fixed": "c8051ae666672cb7ca39531e28ec85636e1ce6d5",
   "introduced": "2be8b436910cfc8b013a13df000c3c854cf3c5c5",
@@ -3023,6 +4351,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43354"
  },
+ "OSV-2022-191": {
+  "fixed": "96f8942f75f6f489312779a0c5ec22b7520319ca",
+  "introduced": "1fadf4754a1741e6fd690dbb65ae778fd1dc0313",
+  "reproduce": {
+   "crash_address": "0x60d000000f67",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6390337302560768",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44942"
+ },
  "OSV-2022-199": {
   "fixed": "4a79f807fd13bd0e53bd1aad6f26066be8bf0b15",
   "introduced": "75fbddf52051987287e62d13c659eb73ba16982f",
@@ -3038,6 +4382,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44983"
+ },
+ "OSV-2022-202": {
+  "fixed": "6f431057c5e11ce24dc88a43b681e9ba9aa5a0e1",
+  "introduced": "75a53ad064bcb19570847554b72e9303d776b8fd",
+  "reproduce": {
+   "crash_address": "0x603000006ecc",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4911041312587776",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=45036"
  },
  "OSV-2022-206": {
   "fixed": "a424f166ee9c1196a6cd7e2ee2289f81545d022d",
@@ -3199,6 +4559,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=46307"
  },
+ "OSV-2022-322": {
+  "fixed": "7f4574f51ad7db56fc13de89e13e7893b1a82189",
+  "introduced": "5f5213c23cc8608537b234e93ee5dae31a77aaff",
+  "reproduce": {
+   "crash_address": "0x60b000000204",
+   "crash_type": "Heap-buffer-overflow READ {*}",
+   "fuzz_target": "decompress_frame_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_c-blosc2",
+   "platform_id": "linux",
+   "project": "c-blosc2",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5392917855862784",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=46460"
+ },
  "OSV-2022-325": {
   "fixed": "06a0abb6fdf8fb7a446ef5aafdf2c7d24608977f",
   "introduced": "b04040768323a7666bcf588f2323054082883d75",
@@ -3247,6 +4623,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43513"
  },
+ "OSV-2022-341": {
+  "fixed": "4775be3d85434d4e385f43a47b783844bbfb2571",
+  "introduced": "e3faecf9de165adececbf77cbe54a8cbe373a91c",
+  "reproduce": {
+   "crash_address": "0x60e00000029e",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6165308433367040",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=46670"
+ },
  "OSV-2022-351": {
   "fixed": "d9c9ce0bf43b17770ff826261d5fed835a29d8ff",
   "introduced": "45e765e59a45b46dcb05e8c729689a7c0574a48c",
@@ -3263,6 +4655,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=46705"
  },
+ "OSV-2022-354": {
+  "fixed": "479649281467ca84a220873d51c7a461b5a78104",
+  "introduced": "341d69825f9af14ff95f820dcdd9ae2e9c4420a0",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "gstoraster_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6390183886454784",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=46734"
+ },
  "OSV-2022-363": {
   "fixed": "9e629ba3649464a928b0af75ddd246b3defee128",
   "introduced": "cb74d5cf5bffc2a9dee8da43105d892f9a728777",
@@ -3278,6 +4686,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=46847"
+ },
+ "OSV-2022-376": {
+  "fixed": "d5005f584c4baf67e084e3bc8b052ca27004550e",
+  "introduced": "ac0f50b56115acc7c8107d9b2661cac6b0d7bf2b",
+  "reproduce": {
+   "crash_address": "0x6060000000c8",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6210205328736256",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=47000"
  },
  "OSV-2022-377": {
   "fixed": "580e8bbebf18579b97e2c20b032368b9079624ca",
@@ -3551,6 +4975,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43621"
  },
+ "OSV-2022-48": {
+  "fixed": "eb5d7b07afae0d1dd8f5b079835d8f1ec66dc160",
+  "introduced": "9c3bfeca80a5064ce5ac689002a9f518d0cb3347",
+  "reproduce": {
+   "crash_address": "0x60c0000005fa",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5682551937695744",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=43664"
+ },
  "OSV-2022-481": {
   "fixed": "bdf54d725bb3e751b63af171e08203e3e434c587",
   "introduced": "7419cfee6407ff2dad687733da8eb27edd181ef9",
@@ -3566,6 +5006,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=48020"
+ },
+ "OSV-2022-483": {
+  "fixed": "8dcaa5c0e11a7af1b529d0d657f4b37f11e8ec11",
+  "introduced": "32428026d6dbcf7ee36aa3c882056b869b593d65",
+  "reproduce": {
+   "crash_address": "0x6040000000bf",
+   "crash_type": "Heap-buffer-overflow READ 4",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6302506059169792",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=48034"
  },
  "OSV-2022-486": {
   "fixed": "f8723dc5e4c47a123fddcae993f91b039c5540be",
@@ -3790,6 +5246,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=49847"
+ },
+ "OSV-2022-691": {
+  "fixed": "59a9bdeb55fb5a712b51141bfa4492a897cda5c8",
+  "introduced": "346e274a1b1d713aedfc341f7d1300009f9f0e1a",
+  "reproduce": {
+   "crash_address": "0x60c00000047f",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5075608702418944",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=49901"
  },
  "OSV-2022-695": {
   "fixed": "540848c254ab4f8f89b6cfab03269ed8dc4dc887",
@@ -4143,6 +5615,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=44123"
  },
+ "OSV-2023-102": {
+  "fixed": "9eb9664516aafb821097f049717c70e576ac18a6",
+  "introduced": "afb5c3e6bad82ebd265ab12254ac7c6e067a791b",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "honggfuzz",
+   "job_type": "honggfuzz_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5403698764578816",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=56272"
+ },
  "OSV-2023-1048": {
   "fixed": "ebe9ce3797a524793217acbc3f54e404745d91d3",
   "introduced": "1760559320f27e75d86c9e6edab467bab63d58e9",
@@ -4319,6 +5807,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=64147"
  },
+ "OSV-2023-117": {
+  "fixed": "c0ca3b2979a6f0999c57549986f99334666e8ef7",
+  "introduced": "5fabd43f6af6c5f432c543b8a84e690dfa31a3b2",
+  "reproduce": {
+   "crash_address": "0xf15fb808",
+   "crash_type": "Heap-buffer-overflow WRITE 4",
+   "fuzz_target": "svc_dec_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_i386_libavc",
+   "platform_id": "linux",
+   "project": "libavc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4601031721091072",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=56386"
+ },
  "OSV-2023-1186": {
   "fixed": "6f43e71f4cbddf96d47648f36161a9815389b50a",
   "introduced": "8ae1f0216bf015cb9d68a64feaca929b7069a9b7",
@@ -4431,6 +5935,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=65031"
  },
+ "OSV-2023-1305": {
+  "fixed": "28727baf58aa7c8983769aff1ceecb3121a26ee6",
+  "introduced": "375b9b7e44b067d7b87bcae7291154ae59c72267",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Check failed",
+   "fuzz_target": "svc_dec_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_libavc",
+   "platform_id": "linux",
+   "project": "libavc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4729722197901312",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=65035"
+ },
  "OSV-2023-1311": {
   "fixed": "28727baf58aa7c8983769aff1ceecb3121a26ee6",
   "introduced": "b2a61a152a5e83b3419212e8d15a10d4488e51d9",
@@ -4478,6 +5998,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=65060"
+ },
+ "OSV-2023-1322": {
+  "fixed": "28727baf58aa7c8983769aff1ceecb3121a26ee6",
+  "introduced": "375b9b7e44b067d7b87bcae7291154ae59c72267",
+  "reproduce": {
+   "crash_address": "0x722000010008",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "svc_dec_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_libavc",
+   "platform_id": "linux",
+   "project": "libavc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4827771779809280",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=65132"
  },
  "OSV-2023-135": {
   "fixed": "9a6bd55c9d0722cb101fe85a3b22d89e4ff4fe52",
@@ -4766,6 +6302,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=59097"
+ },
+ "OSV-2023-416": {
+  "fixed": "9b7e822916a0ccd6fa961e5364f99112bed964c6",
+  "introduced": "a954ad92edf387d7a681f865611ea24c79228ce6",
+  "reproduce": {
+   "crash_address": "0x000005ad1098",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "llvmfuzz",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_libredwg",
+   "platform_id": "linux",
+   "project": "libredwg",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5648878410792960",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=59118"
  },
  "OSV-2023-42": {
   "fixed": "02fd447dbbcc68d6e3cf819ccc0f8fb6c9bb07aa",
@@ -5199,6 +6751,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=61836"
  },
+ "OSV-2023-776": {
+  "fixed": "19381f330ae735d361d9e765148be5e14478256d",
+  "introduced": "36abf06c6f59b66bde48e7b3028b4823ecc6ed85",
+  "reproduce": {
+   "crash_address": "0x6040000000bd",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5440735166726144",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=61882"
+ },
  "OSV-2023-777": {
   "fixed": "b01634c896c29bb3a778daeef9e13ef115995610",
   "introduced": "0ad719902273a8a4d79c026d01ef2057c173579b",
@@ -5230,6 +6798,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=62132"
+ },
+ "OSV-2023-837": {
+  "fixed": "28a980bba6f731f901906f57e5c1ee19f4155849",
+  "introduced": "9c7e845e25cdb899cd833e96a46ef7d6dd8fb6be",
+  "reproduce": {
+   "crash_address": "0x61500008ae32",
+   "crash_type": "Heap-buffer-overflow READ 1",
+   "fuzz_target": "hts_open_fuzzer",
+   "fuzzing_engine": "honggfuzz",
+   "job_type": "honggfuzz_asan_htslib",
+   "platform_id": "linux",
+   "project": "htslib",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5097832530706432",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=62270"
  },
  "OSV-2023-840": {
   "fixed": "82f4e69094b7d6e4200d14ba64ac9937f337710d",
@@ -5326,6 +6910,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=62561"
+ },
+ "OSV-2023-95": {
+  "fixed": "5fabd43f6af6c5f432c543b8a84e690dfa31a3b2",
+  "introduced": "b2a61a152a5e83b3419212e8d15a10d4488e51d9",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Use-of-uninitialized-value",
+   "fuzz_target": "svc_dec_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_libavc",
+   "platform_id": "linux",
+   "project": "libavc",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5974932384514048",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=56176"
  },
  "OSV-2023-965": {
   "fixed": "462607e556faf37a5cd2f75e4c1136e9836ae386",
@@ -5455,6 +7055,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=379072455"
  },
+ "OSV-2024-1375": {
+  "fixed": "b9a2494135a52c1fbc357b93d4238315e17763b6",
+  "introduced": "b76f99df5bf29af8f0b9bfdeb79793f8b821e247",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Index-out-of-bounds",
+   "fuzz_target": "llvmfuzz",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_libredwg",
+   "platform_id": "linux",
+   "project": "libredwg",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4596835821355008",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=383814052"
+ },
  "OSV-2024-1391": {
   "fixed": "da32171815f62653d90da4e9e0302f2e57ab3bd3",
   "introduced": "441c9e3a4ca08fa7f7c00063af33196b0d88ebaf",
@@ -5502,6 +7118,22 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=65820"
+ },
+ "OSV-2024-246": {
+  "fixed": "f5905a62c7fc1922d0b49e9399d56e8cfee69516",
+  "introduced": "99e521eaf8b79ef38764edc204ae588f15ea2291",
+  "reproduce": {
+   "crash_address": "0x6081000000b3",
+   "crash_type": "UNKNOWN READ",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6118938061635584",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=67881"
  },
  "OSV-2024-38": {
   "fixed": "6f43e71f4cbddf96d47648f36161a9815389b50a",
@@ -5647,6 +7279,86 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=66369"
  },
+ "OSV-2025-156": {
+  "fixed": "cde5773762210ce21a2400ace30d864897df0d7d",
+  "introduced": "e052e5b6b7b9f38819bcd8f12c10258936e134e9",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Check failed",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6735681691123712",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=398053003"
+ },
+ "OSV-2025-160": {
+  "fixed": "cde5773762210ce21a2400ace30d864897df0d7d",
+  "introduced": "30c3613f2fae705a284284794b5367ad7c7374ae",
+  "reproduce": {
+   "crash_address": "0x0000fffffff0",
+   "crash_type": "UNKNOWN WRITE",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5532739667558400",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=398049422"
+ },
+ "OSV-2025-165": {
+  "fixed": "b9a2494135a52c1fbc357b93d4238315e17763b6",
+  "introduced": "b76f99df5bf29af8f0b9bfdeb79793f8b821e247",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Index-out-of-bounds",
+   "fuzz_target": "llvmfuzz",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_libredwg",
+   "platform_id": "linux",
+   "project": "libredwg",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6748398014758912",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=398439334"
+ },
+ "OSV-2025-174": {
+  "fixed": "4c4dcc85ce4f3c7fe53f72dd0098cd7906312dbd",
+  "introduced": "d30a9b5e2c551e61795a67ce5b4d6aa1c8ad2fb4",
+  "reproduce": {
+   "crash_address": "0x5310000b0808",
+   "crash_type": "Heap-use-after-free READ 4",
+   "fuzz_target": "gs_device_pdfwrite_fuzzer",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ghostscript",
+   "platform_id": "linux",
+   "project": "ghostscript",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5789252277567488",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=399388654"
+ },
+ "OSV-2025-324": {
+  "fixed": "b9a2494135a52c1fbc357b93d4238315e17763b6",
+  "introduced": "b76f99df5bf29af8f0b9bfdeb79793f8b821e247",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Index-out-of-bounds",
+   "fuzz_target": "llvmfuzz",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_ubsan_libredwg",
+   "platform_id": "linux",
+   "project": "libredwg",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5670249037103104",
+   "sanitizer": "undefined (UBSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=415083665"
+ },
  "OSV-2025-449": {
   "fixed": "75395cb264f9bfd38d27ac0ba506acc9eab22e34",
   "introduced": "6d0a891d1e9ee137d24263881530c5dcb9411709",
@@ -5679,6 +7391,22 @@
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=428771938"
  },
+ "OSV-2025-564": {
+  "fixed": "ae48c8df7a7b01e67838572621b758e4b2d966ec",
+  "introduced": "61d152778d6329350ccf5acb063d6ffc3fd1b366",
+  "reproduce": {
+   "crash_address": "0x5040000000bc",
+   "crash_type": "Heap-buffer-overflow READ 2",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "afl",
+   "job_type": "afl_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4687656288321536",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=432880859"
+ },
  "OSV-2025-584": {
   "fixed": "b34ac3d492b0a46691a5949c19f30fd844c37396",
   "introduced": "2f6371b3b8d69ee596fa44c48ca522db27f6f22f",
@@ -5710,5 +7438,85 @@
    "sanitizer": "address (ASAN)"
   },
   "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=435086517"
+ },
+ "OSV-2025-80": {
+  "fixed": "41133638dc303be1717462876814a6102669757c",
+  "introduced": "aacade6d9571bdf6fc9bd0b5cbbafb65d5123f8f",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_ndpi_reader",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_msan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4661103107309568",
+   "sanitizer": "memory (MSAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=393420192"
+ },
+ "OSV-2025-81": {
+  "fixed": "41133638dc303be1717462876814a6102669757c",
+  "introduced": "aacade6d9571bdf6fc9bd0b5cbbafb65d5123f8f",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=4896401045127168",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=393404264"
+ },
+ "OSV-2025-84": {
+  "fixed": "08a87f27fdc339d9979eed95832cb7ca885b16ba",
+  "introduced": "bc373e778687e03c3702433d41a15440a9db3dd7",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_dissect_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ntopng",
+   "platform_id": "linux",
+   "project": "ntopng",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=5832048429826048",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=393435813"
+ },
+ "OSV-2025-85": {
+  "fixed": "41133638dc303be1717462876814a6102669757c",
+  "introduced": "aacade6d9571bdf6fc9bd0b5cbbafb65d5123f8f",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_process_packet",
+   "fuzzing_engine": "honggfuzz",
+   "job_type": "honggfuzz_asan_ndpi",
+   "platform_id": "linux",
+   "project": "ndpi",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6138189421281280",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=393414230"
+ },
+ "OSV-2025-88": {
+  "fixed": "08a87f27fdc339d9979eed95832cb7ca885b16ba",
+  "introduced": "bc373e778687e03c3702433d41a15440a9db3dd7",
+  "reproduce": {
+   "crash_address": "",
+   "crash_type": "Segv on unknown address",
+   "fuzz_target": "fuzz_dissect_packet",
+   "fuzzing_engine": "libFuzzer",
+   "job_type": "libfuzzer_asan_ntopng",
+   "platform_id": "linux",
+   "project": "ntopng",
+   "reproducer_testcase": "https://oss-fuzz.com/download?testcase_id=6599096806211584",
+   "sanitizer": "address (ASAN)"
+  },
+  "url": "https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=393435814"
  }
 }
