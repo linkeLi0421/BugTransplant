@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Top-level orchestration lives in `script/`. The main entrypoints are `script/bug_transplant.py`, `script/bug_transplant_batch.py`, `script/bug_transplant_merge_offline.py`, `script/fuzzbench_generate.py`, and `script/fuzzbench_triage.py`. Prompt templates are in `script/prompts/`. Generated artifacts, intermediate patches, and run outputs are stored under `data/`. Native helpers live in `cfg-clang/` (LLVM/Clang CFG tool) and `Function_instrument/` (trace library). `oss-fuzz/` is a vendored checkout used for project images and infra tests; `fuzzbench/` is used for experiment runs and generated benchmarks.
+Top-level orchestration lives in `script/`. The main entrypoints are `script/bug_transplant.py`, `script/bug_transplant_batch.py`, `script/bug_transplant_merge_offline.py`, `script/fuzzbench_generate.py`, `script/headbyte_triage.py` and `script/dispatch_zero_replay.py`. Prompt templates are in `script/prompts/`. Input data the pipeline reads -- per-target bug matrices, build maps, PoCs and OSV metadata -- is vendored under `dataset/` (see `dataset/README.md`). Generated artifacts, intermediate patches, and run outputs are stored under `data/`. Native helpers live in `cfg-clang/` (LLVM/Clang CFG tool) and `Function_instrument/` (trace library). `oss-fuzz/` is a vendored checkout used for project images and infra tests; `fuzzbench/` is used for experiment runs and generated benchmarks.
 
 ## Build, Test, and Development Commands
 Create a Python environment and install dependencies with `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`. Load repo-specific paths with `source script/setenv.sh` based on `script/setenv_example.sh`. Common workflows:

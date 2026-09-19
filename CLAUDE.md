@@ -14,34 +14,36 @@ This repository implements automated fuzzing workflows for OSS-Fuzz projects. Th
 ```bash
 source script/setenv.sh
 ```
-Sets: `TESTCASES`, `REPO_PATH`, `BUGINFO_PATH`, `OPENAI_API_KEY`
+Sets `TESTCASES`, `BUGINFO_PATH` and `BUGIDS_PATH` to the in-repo `dataset/`, plus
+`REPO_PATH` and `STORAGE_PATH` which stay external. Copy `script/setenv_example.sh`
+to `script/setenv.sh` and adjust only those two.
 
 ### Bug Transplant via Code Agent
 
 #### Step 1: Batch transplant (one agent session per bug)
 ```bash
 # Dry run — see what would execute
-python3 script/bug_transplant_batch.py ~/log/<project>.csv \
-  --bug_info osv_testcases_summary.json \
-  --build_csv ~/log/<project>_builds.csv \
+python3 script/bug_transplant_batch.py dataset/csv/per_target/<project>_<fuzz_target>.csv \
+  --bug_info dataset/osv_testcases_summary.json \
+  --build_csv dataset/csv/builds/<project>_builds.csv \
   --target <project> --dry-run
 
 # Run all bugs
-sudo -E python3 script/bug_transplant_batch.py ~/log/<project>.csv \
-  --bug_info osv_testcases_summary.json \
-  --build_csv ~/log/<project>_builds.csv \
+sudo -E python3 script/bug_transplant_batch.py dataset/csv/per_target/<project>_<fuzz_target>.csv \
+  --bug_info dataset/osv_testcases_summary.json \
+  --build_csv dataset/csv/builds/<project>_builds.csv \
   --target <project>
 
 # Single bug, skip data collection, keep container for debugging
-sudo -E python3 script/bug_transplant_batch.py ~/log/<project>.csv \
-  --bug_info osv_testcases_summary.json \
-  --build_csv ~/log/<project>_builds.csv \
+sudo -E python3 script/bug_transplant_batch.py dataset/csv/per_target/<project>_<fuzz_target>.csv \
+  --bug_info dataset/osv_testcases_summary.json \
+  --build_csv dataset/csv/builds/<project>_builds.csv \
   --target <project> --bug_id OSV-XXXX --skip-collect --keep-containers
 
 # Resume after interruption (skips completed bugs)
-sudo -E python3 script/bug_transplant_batch.py ~/log/<project>.csv \
-  --bug_info osv_testcases_summary.json \
-  --build_csv ~/log/<project>_builds.csv \
+sudo -E python3 script/bug_transplant_batch.py dataset/csv/per_target/<project>_<fuzz_target>.csv \
+  --bug_info dataset/osv_testcases_summary.json \
+  --build_csv dataset/csv/builds/<project>_builds.csv \
   --target <project> --resume
 ```
 
@@ -50,14 +52,14 @@ sudo -E python3 script/bug_transplant_batch.py ~/log/<project>.csv \
 # Dry run — show dispatch bit assignments
 python3 script/bug_transplant_merge_offline.py \
   --summary data/bug_transplant/batch_<project>_<commit>/summary.json \
-  --bug_info osv_testcases_summary.json \
+  --bug_info dataset/osv_testcases_summary.json \
   --target <project> --dry-run
 
 # Run offline merge (wrap + merge + verify)
 sudo -E python3 script/bug_transplant_merge_offline.py \
   --summary data/bug_transplant/batch_<project>_<commit>/summary.json \
-  --bug_info osv_testcases_summary.json \
-  --build_csv ~/log/<project>_builds.csv \
+  --bug_info dataset/osv_testcases_summary.json \
+  --build_csv dataset/csv/builds/<project>_builds.csv \
   --target <project>
 ```
 
@@ -83,11 +85,19 @@ cp -r /tmp/fuzzbench_benchmarks/c-blosc2_transplant_decompress_frame_fuzzer \
   fuzzbench/benchmarks/
 cd fuzzbench && make build-afl-c-blosc2_transplant_decompress_frame_fuzzer
 
-# Post-experiment triage
-python3 script/fuzzbench_triage.py \
-  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h \
+# Post-experiment: attribute crashes by dispatch head byte
+python3 script/headbyte_triage.py \
+  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h/experiment-folders \
   --bug-metadata benchmarks/c-blosc2_transplant_decompress_frame_fuzzer/bug_metadata.json \
   --output results.csv
+
+# Then keep only the crashes that actually need that byte
+python3 script/dispatch_zero_replay.py \
+  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h/experiment-folders \
+  --bug-metadata benchmarks/c-blosc2_transplant_decompress_frame_fuzzer/bug_metadata.json \
+  --db /tmp/fuzzbench-data/local.db \
+  --image gcr.io/fuzzbench/runners/libfuzzer/c-blosc2_transplant_decompress_frame_fuzzer:latest \
+  --target /out/decompress_frame_fuzzer --out /tmp/dzr_cblosc2
 ```
 
 ### Data Collection
@@ -102,7 +112,7 @@ sudo -E python3 script/fuzz_helper.py collect_trace <project> <fuzzer> \
 
 # Build at a specific commit
 sudo -E python3 script/fuzz_helper.py build_version --commit <sha> \
-  --build_csv ~/log/<project>_builds.csv <project>
+  --build_csv dataset/csv/builds/<project>_builds.csv <project>
 
 # Reproduce a bug
 sudo -E python3 script/fuzz_helper.py reproduce <project> <fuzzer> \
@@ -135,7 +145,7 @@ sudo -E python3 script/fuzz_helper.py reproduce <project> <fuzzer> \
 
 7. **`script/fuzzbench_generate.py`**: Generates a self-contained FuzzBench benchmark directory from merge output. Reads `summary.json` + `builds.csv`, produces Dockerfile (pinned base-builder digest), build.sh (checkout + patch + compile), benchmark.yaml, dispatch-prefixed seeds. Collects crash lines from per-bug `transplant_crash.txt` files and stores them in `bug_metadata.json` for coverage-based triage. Auto-detects new source files from combined.diff and adds them to the library build.
 
-8. **`script/fuzzbench_triage.py`**: Post-experiment analysis. Scans FuzzBench crash dirs for triggered bugs (dispatch bytes in crash inputs), and coverage snapshots for reached bugs (crash line covered). Outputs unified CSV: `fuzzer, trial, bug_id, time_first_reached, time_first_triggered`.
+8. **`script/headbyte_triage.py`**: Post-experiment attribution from the dispatch head byte alone, with discovery times taken from the cumulative crash-archive index (`crashes-<cycle>.tar.gz` x `snapshot_period`). Outputs per (fuzzer, trial, bug): `first_cycle, first_seen_seconds, unique_inputs`. Pair it with **`script/dispatch_zero_replay.py`**, which decides whether each crash actually needed its byte.
 
 ### Data Infrastructure (shared)
 
@@ -159,24 +169,34 @@ When the input format changed between commits, **patch the testcase binary** rat
 After triggering, minimize via single-change elimination (per-file, then per-hunk).
 See `data/feedback_bug_transplant.md` for the full methodology with examples.
 
-### Ungated Replay Methodology
-`script/ungated_*.py` gives each bug that is *native* at the target commit a
-switch (`__UNGATED_FIX(n)`, a **set bit applies that bug's fix**), so a campaign
-crash can be matched to a bug by switching it off rather than by stack
-signature. Verified **one bit at a time**, two masks per bug: mask 0 must crash
-with the class the campaign recorded (fidelity), and this bug's bit alone must
-remove the crash (necessity). Nothing is claimed about what other bits do to
-that PoC — with a whole benchmark's fixes live, one fix routinely shadows
-another, which says nothing about whether the switch works.
+### Necessity Replay Methodology
+A crash's dispatch head byte shows which bug it *selected*, not that the bug
+caused it. `script/dispatch_zero_replay.py` settles that: replay each gated
+crash input as found (control, must crash) and with the head byte zeroed (test,
+should not). A crash that survives zeroing is baseline code wearing that bug's
+selector. Repetition is asymmetric -- a crash is proof and stops immediately, a
+quiet run proves nothing and is retried.
 
-When a PoC measures `no-baseline-crash`, do not conclude the bug is absent until
-`data/feedback_ungated_replay.md` is worked through, in order: the staged
-payload bytes (a testcase-only transplant lives in them), the `--runs` count
-(a stack-use-after-return needs the stack reused *within* a process), whether
-the replay harness handles the payload the way the campaign's did (an
-exactly-sized copy is what makes a one-byte overread visible to ASan), and only
-then the toolchain. `<bench>/crashes/` holds crashes captured on the campaign
-binary itself and settles whether the modern build can produce the bug at all.
+Three things decide whether a "cannot reproduce" verdict is real:
+
+* **The crash oracle.** Not every campaign crash is a sanitizer report. htslib
+  transplants abort or trip an assertion (`Abrt`, `ASSERT`), which libFuzzer
+  reports as "deadly signal"; matching only `SUMMARY: ...Sanitizer` scored 55%
+  of htslib inputs unreproducible when they crash every run. Classify libFuzzer
+  timeout and OOM first -- neither is a bug.
+* **The replay binary.** AFL-family crashes often do not reproduce on their own
+  AFL-instrumented binary run standalone but do on the libFuzzer build of the
+  same benchmark. LibAFL has no one-shot mode at all. Replaying everything on
+  the libFuzzer build took htslib from 3,316 unreproducible to zero.
+* **UBSan crashes** belong to no transplanted bug -- the benchmarks are
+  ASan-only -- and can never reproduce. Pass `--db` so they are dropped at
+  harvest rather than counted as failures.
+
+Note the benchmark Dockerfiles set `ENV ADDITIONAL_ARGS="-rss_limit_mb=8192"`
+and `ASAN_OPTIONS=...detect_stack_use_after_return=1`, but that ENV lives in the
+*builder* image: the runner image is built from base-runner and only copies
+`/out`, and scheduler's `docker run` passes neither. Campaigns therefore run at
+libFuzzer's 2048MB default with stock ASan options, and replays must match.
 
 ### Two-Phase Agent Approach
 Each bug runs two sequential Codex agent sessions inside the same container:
@@ -210,9 +230,9 @@ The merge script builds with ASAN only. UBSAN was dropped from the transplant be
 - `OPENAI_API_KEY`: Required for Codex agent
 
 ### Data Sources
-- **`~/log/<project>.csv`**: Commit x bug status matrix (from `buildAndtest.py`)
-- **`osv_testcases_summary.json`**: Per-bug metadata (fuzzer, sanitizer, crash type)
-- **`~/log/<project>_builds.csv`**: Commit → OSS-Fuzz Docker image mapping
+- **`dataset/csv/per_target/<project>_<fuzz_target>.csv`**: Commit x bug status matrix (from `buildAndtest.py`)
+- **`dataset/osv_testcases_summary.json`**: Per-bug metadata (fuzzer, sanitizer, crash type)
+- **`dataset/csv/builds/<project>_builds.csv`**: Commit -> OSS-Fuzz Docker image mapping
 
 ### Artifacts
 - Per-bug: `data/bug_transplant/<project>_<bug_id>/bug_transplant.diff`

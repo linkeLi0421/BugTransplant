@@ -8,7 +8,7 @@ Automated bug transplant pipeline for OSS-Fuzz projects. Given a project with hi
 
 1. **Batch transplant** -- For each bug, a code agent (Claude Code or Codex) runs inside an OSS-Fuzz Docker container. It reads the crash stack and function trace, identifies what prevents the bug from triggering, and either reverts code changes or patches the testcase binary. A shared CLAUDE.md accumulates project knowledge across bugs.
 2. **Merge** -- Per-bug diffs are applied incrementally. Testcase-only transplants (no code change, only patched testcase) are registered directly. Conflicts between overlapping diffs are resolved by a code agent. After each step, all previously-applied bugs are verified for regressions.
-3. **Dispatch wrapping** -- When merging causes regressions, a bitmask-based dispatch mechanism gates each bug's code changes so they can coexist. Each bug gets a bit in `__bug_dispatch[]`; the fuzzer reads the dispatch byte from the first byte of the test input.
+3. **Dispatch wrapping** -- When merging causes regressions, a slot-based dispatch mechanism gates each bug's code changes so they can coexist. The dispatch byte space is split into equal slices, one per bug plus slot 0 for "no bug", and `__BUG_ACTIVE(n)` is true for exactly one slot at a time. The fuzzer reads the dispatch byte(s) from the first byte(s) of the test input. Because the slots are mutually exclusive, two patches gating the same source line must OR their conditions rather than nest branches.
 
 ## Quick start
 
@@ -18,16 +18,15 @@ source script/setenv.sh
 export ANTHROPIC_API_KEY=...
 
 # 2. See what bugs need transplanting (dry run)
-python3 script/bug_transplant_batch.py ~/log/c-blosc2.csv \
+python3 script/bug_transplant_batch.py dataset/csv/per_target/c-blosc2_decompress_frame_fuzzer.csv \
   --bug_info $BUGINFO_PATH \
-  --build_csv ~/log/c-blosc2_builds.csv \
+  --build_csv dataset/csv/builds/c-blosc2_builds.csv \
   --target c-blosc2 --dry-run
 
 # 3. Run batch transplant (shared container, CLAUDE.md accumulates knowledge)
-sudo -E python3 script/bug_transplant_batch.py ~/log/c-blosc2.csv \
+sudo -E python3 script/bug_transplant_batch.py dataset/csv/per_target/c-blosc2_decompress_frame_fuzzer.csv \
   --bug_info $BUGINFO_PATH \
-  --build_csv ~/log/c-blosc2_builds.csv \
-  --testcases-dir ~/oss-fuzz-for-select/pocs/tmp/ \
+  --build_csv dataset/csv/builds/c-blosc2_builds.csv \
   --target c-blosc2 --resume --keep-containers
 
 # 4. Offline dispatch-wrap and merge all per-bug diffs into one version
@@ -35,7 +34,7 @@ sudo -E python3 script/bug_transplant_merge_offline.py \
   --summary data/bug_transplant/batch_c-blosc2_79e921d9/summary.json \
   --bug_info $BUGINFO_PATH \
   --target c-blosc2 \
-  --build_csv ~/log/c-blosc2_builds.csv
+  --build_csv dataset/csv/builds/c-blosc2_builds.csv
 ```
 
 **Output:**
@@ -116,8 +115,10 @@ open('testcase-OSV-2021-21', 'wb').write(bytes([1]) + d)  # bit 0 = value 1
 | `script/bug_transplant_merge_offline.py` | Offline dispatch-wrap and merge per-bug diffs + testcase-only bugs |
 | `script/fuzzbench_generate.py` | Generate FuzzBench benchmark from merge output |
 | `script/fuzzbench_run.py` | Build and run FuzzBench benchmark, collect artifacts for triage |
-| `script/fuzzbench_triage.py` | Post-experiment triage (crashes + coverage → bug timeline CSV) |
-| `script/sideeffect/analyze.py` | Side-effect analysis: gated vs. always-active stratum, dispatch-bit inference, raw crash bytes |
+| `script/headbyte_triage.py` | Per-bug/per-fuzzer attribution from the dispatch head byte, with discovery times |
+| `script/dispatch_zero_replay.py` | Necessity check: zero the head byte and keep only crashes that still need it |
+| `script/fuzzbench_triage_report.py` | Render triage CSV into per-fuzzer summaries |
+| `dataset/` | CSVs, PoCs and OSV metadata the pipeline reads (see `dataset/README.md`) |
 | `script/prompts/bug_transplant.md` | Transplant prompt (testcase patching, crash verification) |
 | `script/prompts/bug_transplant_memory.md` | CLAUDE.md template for shared knowledge |
 | `script/prompts/minimize_patch.md` | Patch minimization prompt |
@@ -196,45 +197,57 @@ sudo -E python3 script/fuzzbench_run.py opensc_transplant_fuzz_pkcs15_reader \
 
 This uses FuzzBench's full infrastructure (`run_experiment.py`), which handles building, fuzzing, periodic corpus snapshots, coverage measurement, and crash collection.
 
-### Triage (`fuzzbench_triage.py`)
+### Triage (`headbyte_triage.py`)
 
-After the experiment completes, triage which bugs were reached and triggered:
+After the experiment, attribute crashes to bugs by their dispatch head byte:
 
 ```bash
-python3 script/fuzzbench_triage.py \
-  --experiment-dir /tmp/fuzzbench-data/transplant-opensc-24h \
-  --bug-metadata fuzzbench/benchmarks/opensc_transplant_fuzz_pkcs15_reader/bug_metadata.json \
-  --benchmark opensc_transplant_fuzz_pkcs15_reader \
+python3 script/headbyte_triage.py \
+  --experiment-dir /tmp/fuzzbench-data/<experiment>/experiment-folders \
+  --bug-metadata fuzzbench/benchmarks/<benchmark>/bug_metadata.json \
+  --snapshot-period 900 \
   --output results.csv
 ```
 
-This produces:
-- **results.csv** -- Per-bug discovery timeline (fuzzer, trial, bug_id, time_first_reached, time_first_triggered)
-- **results_bug_report.json** -- Detailed per-bug report with crash locations and discovery status
-- **results_bug_report.txt** -- Human-readable summary table
+Attribution is the selector byte alone -- nothing is inferred from stack
+frames. Discovery time comes from the crash archive index: FuzzBench writes
+`crashes-<cycle>.tar.gz` per measurement cycle and the archives are cumulative,
+so the first archive an input appears in gives `cycle * snapshot_period`. Pass
+the campaign's own `--snapshot-period` (900s for htslib and c-blosc2, 1800s for
+libavc).
 
-A bug is **reached** when its crash line (from `bug_metadata.json`) appears in FuzzBench's coverage snapshots. A bug is **triggered** when a crash file contains the matching dispatch bytes.
+Output is one row per (fuzzer, trial, bug) with `first_cycle`,
+`first_seen_seconds/hours` and `unique_inputs`, plus a per-bug and per-fuzzer
+summary on stdout.
 
-### Side-effect analysis (`script/sideeffect/analyze.py`)
+### Necessity replay (`dispatch_zero_replay.py`)
 
-Quantifies how much the dispatch mechanism perturbs the fuzzing task itself, beyond the intended bug injection (paper §3.1). Reuses `fuzzbench_triage` matching functions in-process — it does NOT consume `triage_results*.csv`.
+A head byte shows a crash *selected* a bug, not that the bug caused it. This
+replays each gated crash input twice -- as found, and with the head byte zeroed
+-- and keeps only the crashes that actually need it. A crash that survives
+zeroing is baseline code wearing that bug's selector.
 
 ```bash
-python3 script/sideeffect/analyze.py \
-  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h \
-  --bug-metadata fuzzbench/benchmarks/c-blosc2_transplant_decompress_frame_fuzzer/bug_metadata.json \
-  --output-dir /tmp/sideeffect_cblosc2
+python3 script/dispatch_zero_replay.py \
+  --experiment-dir /tmp/fuzzbench-data/<experiment>/experiment-folders \
+  --bug-metadata fuzzbench/benchmarks/<benchmark>/bug_metadata.json \
+  --db /tmp/fuzzbench-data/local.db \
+  --image gcr.io/fuzzbench/runners/libfuzzer/<benchmark>:latest \
+  --target /out/<fuzz_target> --out <outdir>
 ```
 
-Outputs under `--output-dir`:
-- `stratum_summary.csv` -- per (fuzzer, stratum): trigger/reach fractions, reach-only share, KM medians. Stratum ∈ {`gated`, `always_active`} from each bug's `dispatch_value`.
-- `per_bug_stratum.csv` -- per-bug rollup across fuzzers/trials.
-- `reached_vs_triggered.csv` -- per (fuzzer, stratum, bug) cross-tab.
-- `bit_inference.csv` + `bit_frequency_by_fuzzer.csv` -- dispatch bits inferred from crash stacktraces (which bits must have been set for each gated-bug crash).
-- `crash_bytes.csv` -- first N dispatch bytes from every preserved crash archive (when `experiment-folders/*/trial-*/crashes/*.tar.gz` are non-empty).
-- `side_effect_summary.md` -- rollup rendering.
+Verdicts per input: `gated` (needs the byte), `ungated` (does not), or
+`no-control` (the original does not reproduce, so nothing is provable).
 
-If per-trial coverage archives (`experiment-folders/*/trial-*/coverage/*.json.gz`) are pruned on disk, reach columns are left empty and the markdown flags the missing paths -- no fallback inputs are loaded. See `script/sideeffect/AGENTS.md`.
+Two things matter for a trustworthy result:
+
+* **Replay on the libFuzzer build.** AFL-family crashes often do not reproduce
+  on their own AFL-instrumented binary run standalone, but do on the libFuzzer
+  build of the same benchmark. On htslib this was the difference between 3,316
+  unreproducible inputs and zero. LibAFL has no one-shot mode at all, so its
+  crashes always need `--image` or `--fallback-image`.
+* **`--db` excludes UBSan crashes**, which belong to no transplanted bug (the
+  benchmarks are ASan-only) and can never reproduce.
 
 ### Manual step-by-step workflow
 
@@ -258,17 +271,18 @@ PYTHONPATH=. python3 experiment/run_experiment.py \
   --fuzzers afl aflplusplus honggfuzz libfuzzer \
   --experiment-name transplant-cblosc2-24h
 
-# 4. Triage results (after experiment completes)
-python3 script/fuzzbench_triage.py \
-  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h \
+# 4. Attribute crashes to bugs by dispatch head byte
+python3 script/headbyte_triage.py \
+  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h/experiment-folders \
   --bug-metadata benchmarks/c-blosc2_transplant_decompress_frame_fuzzer/bug_metadata.json \
   --output results.csv
 
-# 5. Side-effect analysis (dispatch mechanism perturbation)
-python3 script/sideeffect/analyze.py \
-  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h \
+# 5. Keep only the crashes that actually need that byte
+python3 script/dispatch_zero_replay.py \
+  --experiment-dir /tmp/fuzzbench-data/transplant-cblosc2-24h/experiment-folders \
   --bug-metadata benchmarks/c-blosc2_transplant_decompress_frame_fuzzer/bug_metadata.json \
-  --output-dir /tmp/sideeffect_cblosc2
+  --image gcr.io/fuzzbench/runners/libfuzzer/c-blosc2_transplant_decompress_frame_fuzzer:latest \
+  --target /out/decompress_frame_fuzzer --out /tmp/dzr_cblosc2
 ```
 
 ### What the generator produces
@@ -294,9 +308,9 @@ The triage script determines bug discovery using two signals: **triggered** = cr
 ### Step 1: Batch transplant (`bug_transplant_batch.py`)
 
 Reads CSV/JSON data:
-- `~/log/<project>.csv` -- commit x bug status matrix
-- `osv_testcases_summary.json` -- fuzzer name, sanitizer, crash type per bug
-- `~/log/<project>_builds.csv` -- commit to Docker image mapping
+- `dataset/csv/per_target/<project>_<fuzz_target>.csv` -- commit x bug status matrix
+- `dataset/osv_testcases_summary.json` -- fuzzer name, sanitizer, crash type per bug
+- `dataset/csv/builds/<project>_builds.csv` -- commit to Docker image mapping
 
 **Shared container mode** (sequential): One Docker container is reused for all bugs.
 Each bug gets a fresh agent session but reads the same CLAUDE.md which accumulates
@@ -321,7 +335,7 @@ For each bug:
 ### Step 2: Offline merge (`bug_transplant_merge_offline.py`)
 
 Two-phase dispatch-wrap and merge:
-1. **Phase 1 -- Wrap**: Each per-bug diff is independently wrapped with dispatch gating on clean source. Each bug gets a bit in `__bug_dispatch[]`; local bugs and testcase-only bugs get `0x00`.
+1. **Phase 1 -- Wrap**: Each per-bug diff is independently wrapped with dispatch gating on clean source. Each bug owns one slot of the dispatch byte space, gated by `__BUG_ACTIVE(n)`; local bugs and testcase-only bugs stay in slot 0 (`0x00`, "no bug"). Slots are mutually exclusive, so exactly one bug is live per input.
 2. **Phase 2 -- Merge**: All wrapped diffs are merged into one codebase via code agent. Since each bug uses a different bit, they don't interfere at runtime.
 3. The harness is modified once to read `__bug_dispatch[]` from the first byte(s) of each testcase. Each PoC gets its dispatch bit prepended.
 4. Verifies all bugs at baseline and after final merge.
@@ -355,7 +369,7 @@ sudo -E python3 script/fuzz_helper.py collect_trace <project> <fuzzer> \
 
 # Build at specific commit
 sudo -E python3 script/fuzz_helper.py build_version --commit <sha> \
-  --build_csv ~/log/<project>_builds.csv <project>
+  --build_csv dataset/csv/builds/<project>_builds.csv <project>
 
 # Reproduce a bug
 sudo -E python3 script/fuzz_helper.py reproduce <project> <fuzzer> \
