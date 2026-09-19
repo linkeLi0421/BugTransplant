@@ -1,0 +1,22 @@
+%!PSncy operations ignored - probably due to using -dSAFER\n\n) print flush$
+    /.pushpdf-2147483687303715884105599devicefiBlter {} bind def
+    /.setshapealpha
+
+     .9 .2 .2 setrgbcolor
+
+     1 -704 256 500 rectfill
+
+     1 263 500 20 rectfill
+
+   .3551978217135037886082 .259 .1 setrgbcolor
+
+     0 0 -455 500 rectfill
+
+     1 263 500 -9223372032559808511 rectfill
+
+   .355197821Å7135037886082 .3 .20596012366103683730347484296 setrgbcolor
+
+     112 65536 -455 500 rectfill
+
+     .evicefiler
+     .endtransparencygroup
