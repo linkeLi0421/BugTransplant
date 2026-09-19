@@ -26,6 +26,23 @@ Your job:
 1. Rewrite the patch to add dispatch wrapping around EVERY change.
 2. Prepend the dispatch byte to the testcase.
 
+## Output contract -- read this before you finish
+
+**Leave your wrapped changes APPLIED in the working tree, uncommitted.**
+The merge harvests them with `git diff` against a baseline commit; it does
+NOT read any patch file you write. So:
+
+- Do NOT `git checkout`, `git stash`, `git reset` or otherwise revert the
+  tree when you are done. "Working tree reverted to baseline" or "source
+  tree left clean" means your work is thrown away and the bug is dropped
+  from the merge.
+- Do NOT commit. Uncommitted modifications are exactly what is wanted.
+- Writing an extra copy of the diff to a file is harmless, but it is not
+  the deliverable and it will not be picked up.
+
+It is fine to build, test and revert *during* your work. Just make sure the
+final state of the tree contains your wrapped changes.
+
 ---
 
 ## Dispatch wrapping rules
@@ -145,6 +162,28 @@ acceptable for the set of files touched by the wrapped patch to be
 a strict subset of the set of files touched by the input patch —
 except for struct/header/macro changes that the earlier sections
 say to apply unconditionally.
+
+### Running the target to check your work
+
+When you run the fuzz target yourself, use the SAME memory cap the
+merge's verifier will use, or you will reach a different conclusion
+than it does:
+
+```bash
+/out/{fuzzer} -runs=10 -rss_limit_mb={dispatch_rss_limit_mb} <testcase>
+```
+
+`-rss_limit_mb` also caps a SINGLE allocation. libFuzzer's 2048MB
+default therefore turns any bug reached through a large malloc into
+`ERROR: libFuzzer: out-of-memory (malloc(...))` before the real fault
+happens. **An out-of-memory report is NOT the bug triggering.** If you
+see one, you have capped the run too low: re-run with the flag above
+and report what actually happens. Declaring success on an OOM makes
+the wrap fail verification and costs the merge ~40 minutes per attempt.
+
+A real trigger is a sanitizer report naming a memory-safety fault
+(`AddressSanitizer: SEGV`, `heap-buffer-overflow`, `heap-use-after-free`,
+...), not a libFuzzer resource limit.
 
 Verification protocol before you finish:
 1. List every file in the input patch.
