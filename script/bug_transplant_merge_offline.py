@@ -175,24 +175,49 @@ _DIFF_EXCLUDES = (
     "':(exclude)build/' ':(exclude)_build/' "
     "':(exclude)obj/' ':(exclude)obj*' ':(exclude)bin/' "
     "':(exclude)tiff-config*' "
-    "':(exclude)examples/' "
     "':(exclude).codex/'"
 )
+
+# Directories excluded only when they do not hold the project's fuzz harness.
+# Some OSS-Fuzz projects keep the harness inside one of these (libredwg's is
+# examples/llvmfuzz.c); excluding it there silently strips every harness hunk
+# -- both the dispatch-byte read and the per-bug `ver = ...` / `out = ...`
+# lines a transplant needs to reach its crash path -- with no error anywhere.
+_CONDITIONAL_DIFF_EXCLUDE_DIRS = ("examples/",)
+
+# Repo-relative directories that hold a project's harness and must therefore
+# survive the exclusions above.
+_PROJECT_HARNESS_REPO_DIRS: dict[str, tuple[str, ...]] = {
+    "libredwg": ("examples/",),
+}
+
+
+def _protected_harness_dirs(project: str) -> tuple[str, ...]:
+    return _PROJECT_HARNESS_REPO_DIRS.get(project, ())
 
 # Per-project extra exclusions. Use for vendored source trees that the
 # project's build.sh removes at build time (so the resulting git deletion
 # noise would otherwise pollute harness.diff / combined.diff).
 _PROJECT_DIFF_EXCLUDES: dict[str, tuple[str, ...]] = {
     "ghostscript": ("cups/", "freetype/", "zlib/", "libpng/"),
+    # vcpkg.json does not exist at libredwg's target commit (it is added
+    # upstream later), but the agents bump its version string anyway. The
+    # hunk then makes combined.diff unappliable in the benchmark build:
+    # "error: vcpkg.json: does not exist in index".
+    "libredwg": ("vcpkg.json",),
 }
 
 
 def _diff_excludes(project: str) -> str:
-    extras = _PROJECT_DIFF_EXCLUDES.get(project, ())
-    if not extras:
-        return _DIFF_EXCLUDES
-    extra_str = " ".join(f"':(exclude){p}'" for p in extras)
-    return f"{_DIFF_EXCLUDES} {extra_str}"
+    protected = _protected_harness_dirs(project)
+    parts = [_DIFF_EXCLUDES]
+    parts += [
+        f"':(exclude){d}'"
+        for d in _CONDITIONAL_DIFF_EXCLUDE_DIRS
+        if d not in protected
+    ]
+    parts += [f"':(exclude){p}'" for p in _PROJECT_DIFF_EXCLUDES.get(project, ())]
+    return " ".join(parts)
 
 
 _DIFF_INCLUDES = (
@@ -216,14 +241,24 @@ _DIFF_INCLUDES = (
 _usage_tracker = CodexUsageTracker()
 
 
-def _strip_build_artifact_hunks(diff_text: str) -> str:
-    """Remove diff hunks for build-artifact paths (CMakeFiles/, etc.)."""
+def _strip_build_artifact_hunks(diff_text: str, project: str = "") -> str:
+    """Remove diff hunks for build-artifact paths (CMakeFiles/, etc.).
+
+    ``project`` keeps the project's harness directory (see
+    :data:`_PROJECT_HARNESS_REPO_DIRS`) out of the strip list, mirroring
+    :func:`_diff_excludes`. Without it the git pathspec would keep the
+    harness hunk and this pass would drop it again.
+    """
     import re
+    protected = _protected_harness_dirs(project)
+    conditional = "".join(
+        f"{d}|" for d in _CONDITIONAL_DIFF_EXCLUDE_DIRS if d not in protected
+    )
     # Split into per-file sections on 'diff --git' boundaries
     parts = re.split(r'(?=^diff --git )', diff_text, flags=re.MULTILINE)
     artifact_header = re.compile(
         r"^diff --git a/(?:"
-        r"cups/|freetype/|zlib/|examples/|"
+        r"cups/|freetype/|zlib/|" + conditional +
         r"obj(?:[./-]|$)|obj\.stale-root-[^/]+/|"
         r"tiff-config(?:[./-]|$)|tiff-config\.stale-root-[^/]+/|"
         r"(?:.*/)?CMakeFiles/|"
@@ -235,6 +270,193 @@ def _strip_build_artifact_hunks(diff_text: str) -> str:
     return ''.join(kept)
 
 
+def _slots_present_in_tree(container: str, project: str,
+                          slots: list[int]) -> set[int]:
+    """Which __BUG_ACTIVE(n) gates currently exist in the container tree."""
+    if not slots:
+        return set()
+    pattern = "|".join(str(n) for n in slots)
+    _, out = _exec_capture(
+        container,
+        f"cd {_source_dir(project)} && "
+        f"git grep -ho -E '__BUG_ACTIVE *\\( *({pattern}) *\\)' -- "
+        f"'*.c' '*.h' '*.cc' '*.cpp' '*.spec' 2>/dev/null",
+    )
+    found: set[int] = set()
+    for m in re.finditer(r"__BUG_ACTIVE\s*\(\s*(\d+)\s*\)", out or ""):
+        found.add(int(m.group(1)))
+    return found
+
+
+def _wrapped_set_digest(wrapped_diffs: dict) -> str:
+    """Content hash of the wrapped diffs a combined.diff was built from."""
+    import hashlib
+    h = hashlib.sha256()
+    for bug_id in sorted(wrapped_diffs):
+        h.update(bug_id.encode())
+        try:
+            h.update(Path(wrapped_diffs[bug_id]).read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _combined_sources_path(output_dir: Path) -> Path:
+    return output_dir / "combined.diff.sources"
+
+
+_WRAP_LOG_DIR: "Path | None" = None
+
+
+def _wrap_log_dir_for(bug_id: str):
+    """Where to drop per-bug wrap diagnostics (set once the run knows its dir)."""
+    return _WRAP_LOG_DIR
+
+
+_MAX_CONSECUTIVE_WRAP_FAILURES = 3
+
+# Substrings that mean the agent never ran, as opposed to running and failing
+# to produce a good wrap. Retrying these is pointless and merging afterwards
+# is destructive.
+_AGENT_AUTH_ERRORS = (
+    "refresh_token_reused",
+    "token_expired",
+    "Provided authentication token is expired",
+    "could not be refreshed because your refresh token was already used",
+    "401 Unauthorized",
+)
+
+
+def _agent_credentials_expired(output: str) -> bool:
+    return any(marker in (output or "") for marker in _AGENT_AUTH_ERRORS)
+
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+_BUG_ACTIVE_RE = re.compile(r"__BUG_ACTIVE\s*\(\s*(\d+)\s*\)")
+
+
+def _diff_target_files(diff_text: str) -> set[str]:
+    """Repo-relative paths a unified diff touches."""
+    return set(re.findall(r"^\+\+\+ b/(.+)$", diff_text, re.M))
+
+
+# Files whose presence in a diff carries no transplant semantics, so their
+# absence from a wrapped diff is not a dropped hunk.
+_AUDIT_IGNORED_FILES = ("vcpkg.json", "__bug_dispatch.c", "__bug_dispatch.h")
+
+
+def _audit_wrapped_diff(
+    bug_id: str,
+    slot: int,
+    wrapped_text: str,
+    original_diff: Path | None,
+) -> list[str]:
+    """Return the reasons *wrapped_text* is not a faithful gating of the bug.
+
+    Two failures were silent before this check and cost 19 libredwg bugs:
+
+    * the wrap produced a diff with no ``__BUG_ACTIVE(slot)`` at all, so the
+      bug is either dead or permanently live rather than gated;
+    * the wrap dropped a file the per-bug transplant needed (the harness,
+      stripped by an over-broad diff exclusion), so the gate is present but
+      the crash path is unreachable.
+    """
+    problems: list[str] = []
+
+    slots = {int(m) for m in _BUG_ACTIVE_RE.findall(wrapped_text)}
+    if slot not in slots:
+        problems.append(
+            f"no __BUG_ACTIVE({slot}) in the wrapped diff -- the patch is "
+            f"ungated (found {sorted(slots) or 'no gates at all'})"
+        )
+    foreign = slots - {slot}
+    if foreign:
+        problems.append(
+            f"wrapped diff also gates foreign slot(s) {sorted(foreign)}"
+        )
+
+    if original_diff is not None and original_diff.exists():
+        orig = original_diff.read_text(errors="replace")
+        want = {
+            f for f in _diff_target_files(orig)
+            if not f.endswith(_AUDIT_IGNORED_FILES)
+        }
+        have = _diff_target_files(wrapped_text)
+        dropped = sorted(want - have)
+        if dropped:
+            problems.append(
+                "wrapped diff dropped file(s) the transplant needed: "
+                + ", ".join(dropped)
+            )
+
+    return problems
+
+
+def _audit_all_wraps(
+    output_dir: Path,
+    dispatch_state: dict,
+    wrapped_diffs: dict,
+    project: str,
+) -> dict[str, list[str]]:
+    """Audit every wrapped diff and log a per-bug verdict."""
+    slot_of = {
+        info["bug_id"]: slot
+        for slot, info in dispatch_state.get("bits", {}).items()
+    }
+    bad: dict[str, list[str]] = {}
+    for bug_id, path in wrapped_diffs.items():
+        slot = slot_of.get(bug_id)
+        if slot is None:
+            continue
+        problems = _audit_wrapped_diff(
+            bug_id, slot,
+            Path(path).read_text(errors="replace"),
+            _REPO_ROOT / "data" / "bug_transplant"
+            / f"{project}_{bug_id}" / "bug_transplant.diff",
+        )
+        if problems:
+            bad[bug_id] = problems
+
+    if not bad:
+        logger.info("Wrap audit: all %d wrapped diffs gate their own slot and "
+                    "keep every file of their transplant", len(wrapped_diffs))
+        return bad
+
+    logger.error("Wrap audit: %d of %d wrapped diffs are not faithful -- "
+                 "these bugs will NOT trigger in the merged build:",
+                 len(bad), len(wrapped_diffs))
+    for bug_id, problems in sorted(bad.items()):
+        for problem in problems:
+            logger.error("  [%s] %s", bug_id, problem)
+    return bad
+
+
+def _audit_merged_slots(
+    combined_diff: str,
+    dispatch_state: dict,
+    wrapped_diffs: dict,
+) -> list[str]:
+    """Report wrapped bugs whose slot did not survive the merge."""
+    slot_of = {
+        info["bug_id"]: slot
+        for slot, info in dispatch_state.get("bits", {}).items()
+    }
+    present = {int(m) for m in _BUG_ACTIVE_RE.findall(combined_diff)}
+    lost = sorted(
+        bug_id for bug_id in wrapped_diffs
+        if slot_of.get(bug_id) is not None and slot_of[bug_id] not in present
+    )
+    if lost:
+        logger.error("Merge audit: %d wrapped bug(s) have no gate in "
+                     "combined.diff -- the merge dropped them: %s",
+                     len(lost), ", ".join(lost))
+    else:
+        logger.info("Merge audit: all %d wrapped slots present in combined.diff",
+                    len(wrapped_diffs))
+    return lost
+
+
 def _clean_diff(container: str, project: str) -> str:
     """Get a clean git diff excluding build artifacts."""
     _stage_untracked_source(container, project)
@@ -242,7 +464,7 @@ def _clean_diff(container: str, project: str) -> str:
         container,
         f"cd {_source_dir(project)} && git diff HEAD -- {_DIFF_INCLUDES} {_diff_excludes(project)}",
     )
-    return _strip_build_artifact_hunks(diff)
+    return _strip_build_artifact_hunks(diff, project)
 
 
 def _clean_diff_against(container: str, project: str, base_rev: str) -> str:
@@ -252,7 +474,7 @@ def _clean_diff_against(container: str, project: str, base_rev: str) -> str:
         container,
         f"cd {_source_dir(project)} && git diff {shlex.quote(base_rev)} -- {_DIFF_INCLUDES} {_diff_excludes(project)}",
     )
-    return _strip_build_artifact_hunks(diff)
+    return _strip_build_artifact_hunks(diff, project)
 
 
 def _save_source_snapshot(container: str, project: str) -> None:
@@ -280,14 +502,22 @@ def _clean_container_working_tree_before_harness_diff(container: str, project: s
     )
 
 
-def _create_harness_baseline_commit(container: str, project: str) -> str:
-    """Create a temporary commit for the harness-applied baseline."""
+def _create_harness_baseline_commit(
+    container: str, project: str, message: str = "codex harness baseline",
+) -> str:
+    """Create a temporary commit for the harness-applied baseline.
+
+    Also used to snapshot each merge chunk: once a chunk is committed, a
+    later chunk's agent cannot lose it with ``git checkout``/``stash``/
+    ``clean``, because the gates live in HEAD rather than only in the
+    working tree.
+    """
     ret, out = _exec_capture(
         container,
         f"cd {_source_dir(project)} && "
         "git add -A && "
         "git -c user.name='Codex' -c user.email='codex@example.com' "
-        "commit --allow-empty -m 'codex harness baseline' >/dev/null 2>&1 && "
+        f"commit --allow-empty -m {shlex.quote(message)} >/dev/null 2>&1 && "
         "git rev-parse HEAD 2>/dev/null",
     )
     if ret != 0:
@@ -302,7 +532,11 @@ def _create_harness_baseline_commit(container: str, project: str) -> str:
 
 
 def _restore_harness_baseline(container: str, project: str, baseline_rev: str) -> None:
-    """Restore the exact harness baseline snapshot."""
+    """Restore the tree to an exact snapshot revision.
+
+    ``baseline_rev`` is the harness baseline for phase 1, and the previous
+    chunk's commit when a merge chunk has to be retried.
+    """
     ret, out = _exec_capture(
         container,
         f"cd {_source_dir(project)} && "
@@ -315,18 +549,72 @@ def _restore_harness_baseline(container: str, project: str, baseline_rev: str) -
 
 _MAX_WRAP_RETRIES = 1
 
+# A merge chunk that wipes earlier chunks' gates is rewound and re-run once
+# with that failure spelled out, rather than merely reported at the end.
+_MERGE_CHUNK_ATTEMPTS = 2
+
+
+def _prior_merge_note(prior_bugs: list[str], prior_slots: list[int]) -> str:
+    """Describe what a merge chunk inherits from the chunks before it."""
+    if not prior_bugs:
+        return (
+            "This is the first chunk: the working tree is the clean harness "
+            "baseline, so only your own patches should appear in `git diff`."
+        )
+    return (
+        f"**The working tree is NOT clean.** {len(prior_bugs)} patch(es) from "
+        "earlier chunks are already merged into it and must survive your "
+        "changes:\n\n"
+        f"- bugs: {', '.join(prior_bugs)}\n"
+        f"- slots that must still be present when you finish: "
+        f"{', '.join(str(n) for n in prior_slots)}\n\n"
+        "Never run `git checkout`, `git stash`, `git reset` or `git clean` to "
+        "get a \"clean\" tree -- that silently deletes every gate above. "
+        "Apply your patches on top of what is there, and edit shared files in "
+        "place rather than rewriting them."
+    )
+
+
+_OPENSC_RELINK_SENTINEL = "bug_transplant: force fuzz target relink"
+
+_OPENSC_RELINK_SNIPPET = """\
+# >>> {sentinel} <<<
+# opensc's src/tests/fuzzing/Makefile.am puts libopensc.la in LIBS, not in
+# <target>_LDADD, so automake emits an empty fuzz_<name>_DEPENDENCIES and make
+# reports the fuzz binaries "up to date" no matter what changed in the library.
+# Every wrap after the first one then verifies against the binary the FIRST
+# compile produced -- so a correct wrap looks like it does not trigger. Delete
+# the link outputs so make has to rebuild them.
+find "$SRC/opensc/src/tests/fuzzing" -maxdepth 1 -type f -name 'fuzz_*' \\
+    ! -name '*.*' -delete 2>/dev/null || true
+# <<< {sentinel} >>>
+""".format(sentinel=_OPENSC_RELINK_SENTINEL)
+
 
 def _patch_build_sh_for_project(content: str, project: str) -> str:
     """Apply project-specific build.sh hygiene before repeated compiles."""
-    if project == "ntopng":
-        # json-c's side build directory can survive between compiles when
-        # containers are reused.
-        content = re.sub(
-            r"^(\s*)mkdir\s+build\s*$",
-            r"\1mkdir -p build",
-            content,
-            flags=re.MULTILINE,
-        )
+    if project == "opensc" and _OPENSC_RELINK_SENTINEL not in content:
+        lines = content.splitlines(keepends=True)
+        patched = []
+        inserted = False
+        for line in lines:
+            if not inserted and re.match(r'^make\s', line.strip()):
+                patched.append(_OPENSC_RELINK_SNIPPET)
+                inserted = True
+            patched.append(line)
+        if inserted:
+            content = "".join(patched)
+
+    # A side build dir created with a bare `mkdir build` (ntopng and ndpi both
+    # do this for the json-c they vendor) survives between compiles in a reused
+    # container, and the second `mkdir` fails the whole build under `set -e`.
+    # Harmless on a clean tree, so apply it for every project.
+    content = re.sub(
+        r"^(\s*)mkdir\s+build\s*$",
+        r"\1mkdir -p build",
+        content,
+        flags=re.MULTILINE,
+    )
 
     if project != "ghostscript":
         return content
@@ -445,14 +733,30 @@ def _find_harness_source_paths(
     if paths:
         return list(dict.fromkeys(paths))
 
+    # maxdepth 6: opensc's harnesses live at
+    # /src/opensc/src/tests/fuzzing/<fuzzer>.c, four levels below the source
+    # dir. A shallower sweep silently finds nothing, and every caller then
+    # concludes the harness does not consume dispatch bytes.
     ret, out = _exec_capture(
         container,
-        f"find /src {_source_dir(project)} -maxdepth 3 -type f "
+        f"find /src {_source_dir(project)} -maxdepth 6 -type f "
         f"\\( -name {shlex.quote(fuzzer + '.cc')} "
         f"-o -name {shlex.quote(fuzzer + '.cpp')} "
         f"-o -name {shlex.quote(fuzzer + '.cxx')} "
         f"-o -name {shlex.quote(fuzzer + '.c')} \\) "
         "-exec grep -l 'LLVMFuzzerTestOneInput' {} \\; 2>/dev/null",
+    )
+    paths = list(dict.fromkeys(line.strip() for line in out.splitlines() if line.strip()))
+    if paths:
+        return paths
+
+    # Last resort: the harness file may not be named after the fuzzer binary
+    # at all. Take any fuzz source under the tree that defines the entrypoint.
+    ret, out = _exec_capture(
+        container,
+        f"grep -rl --include='*.c' --include='*.cc' --include='*.cpp' "
+        f"--include='*.cxx' 'LLVMFuzzerTestOneInput' /src {_source_dir(project)} "
+        "2>/dev/null",
     )
     return list(dict.fromkeys(line.strip() for line in out.splitlines() if line.strip()))
 
@@ -479,11 +783,23 @@ def _harness_dispatch_consumer_present(
     project: str,
     fuzzer: str,
 ) -> bool:
-    """Return True if the primary fuzzer consumes dispatch bytes."""
-    return any(
-        _harness_source_sets_dispatch(container, path)
-        for path in _find_harness_source_paths(container, project, fuzzer)
-    )
+    """Return True if the primary fuzzer consumes dispatch bytes.
+
+    When no harness source can be located at all the check has nothing to
+    inspect; say so and pass, rather than reporting the agent's work as
+    missing. The nm-level check in _modify_harness_for_dispatch still
+    guarantees __bug_dispatch is linked into the fuzzer.
+    """
+    paths = _find_harness_source_paths(container, project, fuzzer)
+    if not paths:
+        logger.warning(
+            "No harness source located for %s; skipping the source-level "
+            "dispatch-consumer check (register the path in "
+            "_HARNESS_SOURCE_TEMPLATES to restore it)",
+            fuzzer,
+        )
+        return True
+    return any(_harness_source_sets_dispatch(container, path) for path in paths)
 
 
 def _harness_sources_dir(output_dir: Path) -> Path:
@@ -1090,8 +1406,30 @@ def wrap_bug_with_dispatch(
         # Fuzz targets didn't build — real failure.
         logger.error("[%s] Build failed after wrapping (fuzz targets missing)",
                      bug_id)
-        logger.error("[%s] Build tail: %s",
-                     bug_id, build_out[-1000:] if build_out else "(no output)")
+        # A 1000-char tail routinely ends *after* the compiler error, leaving
+        # the failure undiagnosable once the container is gone (OSV-2023-566
+        # failed twice with no error recorded anywhere). Save the whole log and
+        # surface the error lines specifically.
+        err_lines = [
+            ln for ln in (build_out or "").splitlines()
+            if re.search(r"\berror:|\bfatal error\b|undefined reference|No rule to make",
+                         ln)
+        ]
+        if err_lines:
+            logger.error("[%s] Build errors:\n  %s",
+                         bug_id, "\n  ".join(err_lines[:15]))
+        else:
+            logger.error("[%s] Build tail: %s",
+                         bug_id, build_out[-1000:] if build_out else "(no output)")
+        try:
+            log_dir = _wrap_log_dir_for(bug_id)
+            if log_dir is not None:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                fp = log_dir / f"{bug_id}_build_failed.log"
+                fp.write_text(build_out or "")
+                logger.error("[%s] Full build log: %s", bug_id, fp)
+        except Exception as exc:  # diagnostics must never mask the failure
+            logger.warning("[%s] Could not save build log: %s", bug_id, exc)
         return False, build_out
     if ret != 0:
         logger.warning("[%s] Compile had errors but fuzz targets built OK", bug_id)
@@ -1391,6 +1729,16 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                     harness_diff_path,
                 )
                 return 1
+            # The injection above overwrote __bug_dispatch.h/.c with the
+            # current templates, so the saved harness.diff now carries stale
+            # copies of them. It ships verbatim into the FuzzBench benchmark,
+            # where the stale version would rebuild the link errors the
+            # current template exists to avoid -- re-capture it.
+            refreshed = _clean_diff(container, project)
+            if refreshed.strip():
+                harness_diff_path.write_text(refreshed)
+                logger.info("Harness diff refreshed with current dispatch files (%d bytes)",
+                            len(refreshed))
             ret, out = _exec_capture(container, _compile_cmd(container), timeout=1800)
             if ret != 0:
                 logger.error("Build failed after applying existing harness.diff")
@@ -1546,6 +1894,7 @@ def run_offline_merge(args: argparse.Namespace) -> int:
                     "merge: %s", len(missing), ", ".join(sorted(missing)))
 
         start_step = getattr(args, "start_step", 0)
+        consecutive_wrap_failures = 0
         for i, bd in enumerate(diff_bugs):
             bug_id = bd["bug_id"]
             bit_index = next(
@@ -1582,6 +1931,7 @@ def run_offline_merge(args: argparse.Namespace) -> int:
 
             output = ""
             wrap_log_dir = output_dir / "wrap_logs"
+            globals()["_WRAP_LOG_DIR"] = wrap_log_dir
             for attempt in range(_MAX_WRAP_RETRIES + 1):
                 success, output = wrap_bug_with_dispatch(
                     container, project, bd, bit_index,
@@ -1634,21 +1984,79 @@ def run_offline_merge(args: argparse.Namespace) -> int:
             if not step["success"]:
                 logger.error("[%s] FAILED after %d attempts, skipping",
                              bug_id, _MAX_WRAP_RETRIES + 1)
+                consecutive_wrap_failures += 1
+                if _agent_credentials_expired(output):
+                    raise RuntimeError(
+                        f"[{bug_id}] the code agent could not authenticate "
+                        f"(expired/reused Codex token). Re-run `codex login` "
+                        f"on the host so ~/.codex/auth.json is refreshed, then "
+                        f"resume. Aborting before the merge destroys the "
+                        f"existing combined.diff."
+                    )
+                if consecutive_wrap_failures >= _MAX_CONSECUTIVE_WRAP_FAILURES:
+                    raise RuntimeError(
+                        f"{consecutive_wrap_failures} wraps failed in a row -- "
+                        f"this is a systemic failure (agent, container or "
+                        f"build), not {consecutive_wrap_failures} independent "
+                        f"bugs. Aborting rather than merging a tree where "
+                        f"nothing got wrapped."
+                    )
+            else:
+                consecutive_wrap_failures = 0
 
             step["output"] = output[-500:] if output else ""
             merge_results.append(step)
             _save_progress(output_dir, dispatch_state, merge_results,
                            list(wrapped_diffs.keys()))
 
+        # Audit phase 1 before spending the merge on diffs that cannot work.
+        bad_wraps = _audit_all_wraps(
+            output_dir, dispatch_state, wrapped_diffs, project,
+        )
+        if bad_wraps and not getattr(args, "allow_lossy_wrap", False):
+            raise RuntimeError(
+                f"{len(bad_wraps)} wrapped diff(s) failed the wrap audit "
+                f"({', '.join(sorted(bad_wraps))}). Fix the wrap (or pass "
+                f"--allow-lossy-wrap to merge anyway) -- merging as-is "
+                f"produces a benchmark where those bugs never trigger."
+            )
+
         # ------------------------------------------------------------------
         # 8. Phase 2: Merge all wrapped diffs via code agent
         # ------------------------------------------------------------------
         combined_path = output_dir / "combined.diff"
+        # A combined.diff is only reusable if it was built from exactly the
+        # wrapped diffs we now hold. Re-wrapping a bug leaves the old
+        # combined.diff on disk, and reusing it silently merges nothing --
+        # the harness hunks a re-wrap just recovered never reach the build.
+        wrapped_digest = _wrapped_set_digest(wrapped_diffs)
+        recorded_digest = ""
+        if _combined_sources_path(output_dir).exists():
+            recorded_digest = _combined_sources_path(
+                output_dir).read_text().strip()
+        combined_is_current = recorded_digest == wrapped_digest
+        if (combined_path.exists() and combined_path.stat().st_size > 0
+                and not combined_is_current):
+            logger.warning(
+                "combined.diff exists but was NOT built from the current "
+                "wrapped diffs (%s) -- re-merging instead of reusing it",
+                "no digest recorded" if not recorded_digest
+                else f"digest {recorded_digest[:12]} != {wrapped_digest[:12]}",
+            )
         if (
             reuse_wrapped_cache
             and dispatch_order_unchanged
+            and not rewrap_only
+            and combined_is_current
             and combined_path.exists()
             and combined_path.stat().st_size > 0
+            # A combined.diff that the audit already condemned must not be
+            # reused: the wrapped-diff digest still matches, so every later
+            # run would silently rebuild the same tree with the same bugs
+            # missing. Re-merge instead.
+            and not _audit_merged_slots(
+                combined_path.read_text(errors='replace'),
+                dispatch_state, wrapped_diffs)
         ):
             # Reuse existing combined diff — skip the agent merge entirely.
             # Only safe when the dispatch order is *unchanged*; an incremental
@@ -1707,61 +2115,164 @@ def run_offline_merge(args: argparse.Namespace) -> int:
 
                 applied_bugs = []
                 merge_failed = False
+                dropped_by_chunk: dict[int, list[str]] = {}
+                merge_log_dir = output_dir / "merge_logs"
+                merge_log_dir.mkdir(parents=True, exist_ok=True)
+                # Each chunk is committed once it verifies, so the next
+                # chunk's agent starts from a tree whose earlier gates are in
+                # HEAD. A stray `git checkout`/`stash`/`clean` then costs
+                # nothing, and a retry has an exact point to rewind to.
+                chunk_base_rev = harness_baseline_rev
                 for chunk_idx, start in enumerate(range(0, total_patches, max_chunk), start=1):
                     chunk = patch_descriptions[start:start + max_chunk]
                     patch_list = "\n".join(chunk)
-                    merge_prompt = _load_prompt(
-                        "merge_wrapped_patches",
-                        project=project,
-                        target_commit=target_commit,
-                        patch_list=patch_list,
-                        source_dir=_source_dir(project),
+                    chunk_bugs = [
+                        m.group(1) for m in (
+                            re.search(r"—\s+(OSV-[0-9]{4}-[0-9]+)\s*$", desc)
+                            for desc in chunk
+                        ) if m
+                    ]
+                    prior_bugs = list(applied_bugs)
+                    prior_slots = sorted(
+                        slot for slot, info in dispatch_state["bits"].items()
+                        if info["bug_id"] in prior_bugs
                     )
+                    feedback = ""
 
-                    setup_codex_creds(container)
-                    codex_mode = getattr(args, "codex_mode", "exec")
-                    agent_cmd = build_codex_command(
-                        merge_prompt, args.model, mode=codex_mode,
-                    )
+                    for attempt in range(1, _MERGE_CHUNK_ATTEMPTS + 1):
+                        if attempt > 1:
+                            logger.info(
+                                "Rewinding chunk %d to %s and retrying (%d/%d)",
+                                chunk_idx, chunk_base_rev[:12],
+                                attempt, _MERGE_CHUNK_ATTEMPTS,
+                            )
+                            _restore_harness_baseline(
+                                container, project, chunk_base_rev)
 
-                    logger.info(
-                        "Invoking codex to merge chunk %d (%d patches: %d..%d/%d)",
-                        chunk_idx,
-                        len(chunk),
-                        start + 1,
-                        min(start + len(chunk), total_patches),
-                        total_patches,
-                    )
-                    if codex_mode == "interactive":
-                        ret, output = _exec_interactive(container, agent_cmd, timeout=3600)
-                    else:
-                        ret, output = _exec_capture(container, agent_cmd, timeout=3600)
-                    _usage_tracker.log_usage(f"merge chunk {chunk_idx}", output, args.model)
-                    if ret != 0:
-                        logger.error(
-                            "Agent failed on chunk %d (exit %d). Output tail: %s",
-                            chunk_idx, ret, output[-500:] if output else "",
+                        merge_prompt = _load_prompt(
+                            "merge_wrapped_patches",
+                            project=project,
+                            target_commit=target_commit,
+                            patch_list=patch_list,
+                            source_dir=_source_dir(project),
+                            prior_merge_state=_prior_merge_note(
+                                prior_bugs, prior_slots) + feedback,
                         )
-                        merge_failed = True
+
+                        setup_codex_creds(container)
+                        codex_mode = getattr(args, "codex_mode", "exec")
+                        agent_cmd = build_codex_command(
+                            merge_prompt, args.model, mode=codex_mode,
+                        )
+
+                        logger.info(
+                            "Invoking codex to merge chunk %d (%d patches: %d..%d/%d)",
+                            chunk_idx,
+                            len(chunk),
+                            start + 1,
+                            min(start + len(chunk), total_patches),
+                            total_patches,
+                        )
+                        if codex_mode == "interactive":
+                            ret, output = _exec_interactive(container, agent_cmd, timeout=3600)
+                        else:
+                            ret, output = _exec_capture(container, agent_cmd, timeout=3600)
+                        _usage_tracker.log_usage(f"merge chunk {chunk_idx}", output, args.model)
+
+                        # The container is destroyed at the end of the run, so
+                        # a chunk transcript left only inside it is
+                        # unrecoverable exactly when it is needed.
+                        stem = merge_log_dir / f"chunk{chunk_idx}_attempt{attempt}"
+                        stem.with_suffix(".jsonl").write_text(output or "")
+                        try:
+                            stem.with_suffix(".txt").write_text(
+                                _format_codex_output(output or ""))
+                        except Exception:
+                            pass
+                        stem.with_suffix(".prompt.md").write_text(merge_prompt)
+
+                        if ret != 0:
+                            logger.error(
+                                "Agent failed on chunk %d (exit %d). Output tail: %s",
+                                chunk_idx, ret, output[-500:] if output else "",
+                            )
+                            merge_failed = True
+                            break
+
+                        # Verify build after each chunk so failures are localized.
+                        ret, build_out = _exec_capture(
+                            container, _compile_cmd(container), timeout=1800,
+                        )
+                        if ret != 0:
+                            logger.error(
+                                "Build failed after chunk %d: %s",
+                                chunk_idx, build_out[-500:],
+                            )
+                            merge_failed = True
+                            break
+
+                        # A chunk merges on top of the previous ones, and the
+                        # files it touches are often shared (on libredwg 24 of
+                        # 62 bugs edit examples/llvmfuzz.c). An agent that
+                        # rewrites such a file wholesale -- or resets the tree
+                        # to get a "clean" checkout -- silently deletes the
+                        # gates earlier chunks placed: on opensc chunk 2 left
+                        # only its own 8 slots and all 15 of chunk 1's were
+                        # gone. Check the earlier slots after every chunk.
+                        lost = []
+                        if prior_slots:
+                            still_there = _slots_present_in_tree(
+                                container, project, prior_slots)
+                            lost = sorted(set(prior_slots) - still_there)
+                        if not lost:
+                            break
+
+                        lost_bugs = [
+                            dispatch_state["bits"][slot]["bug_id"]
+                            for slot in lost
+                        ]
+                        logger.error(
+                            "Chunk %d DROPPED %d gate(s) merged by earlier "
+                            "chunks: %s",
+                            chunk_idx, len(lost), ", ".join(lost_bugs),
+                        )
+                        if attempt < _MERGE_CHUNK_ATTEMPTS:
+                            feedback = (
+                                "\n\n## Your previous attempt destroyed earlier work\n\n"
+                                "It removed these already-merged slots: "
+                                + ", ".join(str(n) for n in lost)
+                                + " (bugs " + ", ".join(lost_bugs) + ").\n"
+                                "The tree has been rewound. Apply your patches "
+                                "with `git apply --3way` ONLY, on top of what is "
+                                "already there. Do not run `git checkout`, "
+                                "`git stash`, `git reset` or `git clean`, and do "
+                                "not rewrite a whole file -- edit it in place.\n"
+                            )
+                            continue
+                        logger.error(
+                            "Chunk %d still dropped gates after %d attempts. "
+                            "Re-merge those bugs (their wrapped diffs are "
+                            "unchanged) before trusting this tree.",
+                            chunk_idx, _MERGE_CHUNK_ATTEMPTS,
+                        )
+                        dropped_by_chunk.setdefault(
+                            chunk_idx, []).extend(lost_bugs)
+
+                    if merge_failed:
                         break
 
-                    # Verify build after each chunk so failures are localized.
-                    ret, build_out = _exec_capture(
-                        container, _compile_cmd(container), timeout=1800,
-                    )
-                    if ret != 0:
-                        logger.error(
-                            "Build failed after chunk %d: %s",
-                            chunk_idx, build_out[-500:],
-                        )
-                        merge_failed = True
-                        break
+                    applied_bugs.extend(chunk_bugs)
+                    chunk_base_rev = _create_harness_baseline_commit(
+                        container, project, f"codex merge chunk {chunk_idx}")
+                    logger.info("Chunk %d committed: %s",
+                                chunk_idx, chunk_base_rev[:12])
 
-                    # Track which bug IDs were included in this chunk
-                    for desc in chunk:
-                        m = re.search(r"—\s+(OSV-[0-9]{4}-[0-9]+)\s*$", desc)
-                        if m:
-                            applied_bugs.append(m.group(1))
+                if dropped_by_chunk:
+                    all_lost = sorted(
+                        {b for v in dropped_by_chunk.values() for b in v})
+                    logger.error(
+                        "Merge lost %d bug(s) to later chunks overwriting "
+                        "shared files: %s", len(all_lost), ", ".join(all_lost))
 
                 if not merge_failed:
                     # If everything succeeded, consider all wrapped diffs merged.
@@ -1770,7 +2281,23 @@ def run_offline_merge(args: argparse.Namespace) -> int:
         # Build ASAN with all patches applied
         logger.info("Building with all patches applied...")
         _ensure_dispatch_linked_everywhere(container, project)
-        _exec_capture(container, _compile_cmd(container), timeout=1800)
+        build_ret, build_out = _exec_capture(
+            container, _compile_cmd(container), timeout=1800,
+        )
+        if build_ret != 0:
+            # Without this check a failed compile is invisible: verification
+            # runs against the stale binary and every bug reports "does NOT
+            # trigger", which reads as 62 broken patches instead of one broken
+            # build. The reuse path above has always checked this.
+            logger.error("Build FAILED after merging (exit %d). The merged "
+                         "tree does not compile, so the verification below "
+                         "would be meaningless. Last output:\n%s",
+                         build_ret, build_out[-3000:] if build_out else "(none)")
+            build_log = output_dir / "merge_build_failed.txt"
+            build_log.write_text(build_out or "")
+            logger.error("Full build output saved to %s", build_log)
+            return 1
+        logger.info("Build OK after merging")
         _exec_capture(container,
                       "mkdir -p /out/address && "
                       "for f in /out/*; do [ -f \"$f\" ] && [ -x \"$f\" ] && "
@@ -1797,10 +2324,26 @@ def run_offline_merge(args: argparse.Namespace) -> int:
             container, project, all_bugs, testcase_stage_dir, dispatch_state,
         )
 
-        final_results = verify_all_bugs(container, all_bugs)
+        # Verify only what this pipeline produced. `local_bugs` already
+        # trigger at the target commit, so they carry no wrapped diff and no
+        # dispatch slot -- verifying them tests the upstream project, not the
+        # transplant, and it is not free: libredwg's three locals
+        # (OSV-2023-314, -397, -1051) HANG rather than crash, and one of them
+        # burned 47 minutes across five concurrent attempts before the run was
+        # killed. This matches the baseline check, which is disabled for the
+        # same bugs for the same reason.
+        verify_bugs = testcase_only_bugs + diff_bugs
+        if local_bugs:
+            logger.info("Skipping final verification for %d local bug(s) "
+                        "(already trigger at target, not a transplant "
+                        "result): %s", len(local_bugs),
+                        ", ".join(b["bug_id"] for b in local_bugs))
+        final_results = verify_all_bugs(container, verify_bugs)
         triggered = sum(1 for v in final_results.values() if v)
         total = len(final_results)
-        logger.info("\nRESULT: %d / %d bugs triggering", triggered, total)
+        logger.info("\nRESULT: %d / %d transplanted bugs triggering "
+                    "(%d local bug(s) staged but not verified)",
+                    triggered, total, len(local_bugs))
         for bid, ok in final_results.items():
             logger.info("  %s: %s", bid, "OK" if ok else "FAIL")
 
@@ -1809,8 +2352,39 @@ def run_offline_merge(args: argparse.Namespace) -> int:
         # ------------------------------------------------------------------
         combined_diff = _clean_diff_against(container, project, harness_baseline_rev)
         combined_path = output_dir / "combined.diff"
+        # Keep the previous combined diff. This file is the merge's only
+        # irreplaceable output, and a run that fails late (expired agent
+        # credentials, a broken container) otherwise overwrites a good one
+        # with a stub.
+        if combined_path.exists() and combined_path.stat().st_size > 0:
+            backup = output_dir / "combined.diff.bak"
+            backup.write_text(combined_path.read_text(errors="replace"))
+            if len(combined_diff) < combined_path.stat().st_size // 2:
+                logger.error(
+                    "New combined diff (%d bytes) is less than half the "
+                    "previous one (%d bytes) -- the merge almost certainly "
+                    "failed. Previous version kept at %s",
+                    len(combined_diff), combined_path.stat().st_size, backup,
+                )
         combined_path.write_text(combined_diff)
+        _combined_sources_path(output_dir).write_text(
+            _wrapped_set_digest(wrapped_diffs))
         logger.info("Combined diff: %s (%d bytes)", combined_path, len(combined_diff))
+
+        # Re-snapshot the harness NOW, after the merge. The snapshot taken
+        # right after dispatch modification holds only the clean dispatch
+        # read; any per-bug harness gating the merge introduced lives solely
+        # in the merged tree, and fuzzbench_generate.py restores the harness
+        # from this snapshot whole-file, overwriting whatever combined.diff
+        # says. Snapshotting late is what makes per-bug harness gates reach
+        # the benchmark.
+        if combined_diff.strip():
+            _save_harness_sources(container, project, primary_fuzzer, output_dir)
+        else:
+            logger.error("Empty combined diff -- keeping the previous harness "
+                         "snapshot rather than overwriting it")
+
+        _audit_merged_slots(combined_diff, dispatch_state, wrapped_diffs)
 
     # Save testcases
         tc_dir = output_dir / "testcases"
@@ -1926,6 +2500,10 @@ def main():
                         help="Show plan without executing")
     parser.add_argument("--keep-container", action="store_true",
                         help="Keep container for debugging")
+    parser.add_argument("--allow-lossy-wrap", action="store_true",
+                        help="Merge even when the wrap audit finds wrapped "
+                             "diffs that are ungated or dropped a file their "
+                             "transplant needed (those bugs will not trigger)")
     parser.add_argument("--regenerate-harness", action="store_true",
                         help="Ignore saved harness artifacts and rebuild the "
                              "dispatch-consuming fuzz harness")
