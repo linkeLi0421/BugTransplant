@@ -389,7 +389,21 @@ _DISPATCH_HEADER_TEMPLATE = """\
 #define __BUG_DISPATCH_BYTES {dispatch_bytes}
 #define __BUG_DISPATCH_SLOTS {dispatch_slots}
 #define __BUG_DISPATCH_SLICE {dispatch_slice}
+
+/* Wrapped bugs usually live in a core library that many binaries link:
+ * the project's own tools and its other fuzz targets, none of which the
+ * harness agent wired __bug_dispatch.c into. Those links would fail with
+ * "undefined reference to __bug_dispatch". Carrying a weak definition in
+ * every including translation unit keeps them linkable; the strong
+ * definition in __bug_dispatch.c overrides all of them, so the harness and
+ * the wrapped library still read and write one object. */
+#ifdef __BUG_DISPATCH_STRONG
+volatile uint8_t __bug_dispatch[__BUG_DISPATCH_BYTES] = {{0}};
+#elif defined(__GNUC__) || defined(__clang__)
+__attribute__((weak)) volatile uint8_t __bug_dispatch[__BUG_DISPATCH_BYTES];
+#else
 extern volatile uint8_t __bug_dispatch[__BUG_DISPATCH_BYTES];
+#endif
 
 /* Selected slot: 0 = no bug, 1..SLOTS-1 = the bug with that slot. */
 static inline unsigned long __bug_dispatch_slot(void) {{
@@ -407,8 +421,8 @@ static inline unsigned long __bug_dispatch_slot(void) {{
 """
 
 _DISPATCH_SOURCE = """\
+#define __BUG_DISPATCH_STRONG 1
 #include "__bug_dispatch.h"
-volatile uint8_t __bug_dispatch[__BUG_DISPATCH_BYTES] = {0};
 """
 
 def _dispatch_geometry(dispatch_state: dict) -> tuple[int, int, int]:
@@ -440,6 +454,9 @@ _HARNESS_SOURCE_TEMPLATES = {
     # decompress_frame_fuzzer is built from tests/fuzz/fuzz_decompress_frame.c
     # (strip _fuzzer suffix, prepend fuzz_).
     "c-blosc2": ("/src/c-blosc2/tests/fuzz/fuzz_{fuzzer_base}.c",),
+    # opensc keeps its harnesses four levels down, deeper than the generic
+    # find fallback reaches.
+    "opensc": ("/src/opensc/src/tests/fuzzing/{fuzzer}.c",),
 }
 
 
@@ -786,7 +803,26 @@ def _rebuild_project_image(project: str, target_commit: str,
     we only need the ``gcr.io/oss-fuzz/{project}`` image it produces.
     """
     sys.path.insert(0, str(SCRIPT_DIR))
-    from bug_transplant import build_agent_image
+    from bug_transplant import build_agent_image, _pin_image_siblings
+
+    project_image = f"gcr.io/oss-fuzz/{project}"
+
+    # Reuse an existing image only when its checkout is provably at the target
+    # commit. The tag carries no commit identity, so a stale image from another
+    # run would silently merge against the wrong source -- hence the probe
+    # rather than a plain `docker image inspect`. Rebuilding costs ~9 minutes
+    # and every resumed merge paid it.
+    probe = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "git", project_image,
+         "-C", f"/src/{project}", "rev-parse", "HEAD"],
+        capture_output=True, encoding="utf-8", errors="replace")
+    if probe.returncode == 0 and probe.stdout.strip() == target_commit:
+        logger.info("Reusing project image %s (already at %s)",
+                    project_image, target_commit[:12])
+        return build_agent_image(project, project_image)
+    if probe.returncode == 0 and probe.stdout.strip():
+        logger.info("Project image is at %s, need %s -- rebuilding",
+                    probe.stdout.strip()[:12], target_commit[:12])
 
     # Use fuzz_helper.py build_version to build the project Docker image.
     # This handles: oss-fuzz commit checkout, base-builder digest pinning,
@@ -812,8 +848,14 @@ def _rebuild_project_image(project: str, target_commit: str,
         sys.exit(1)
     logger.info("Project image built: gcr.io/oss-fuzz/%s", project)
 
+    # build_version reclones unpinned sibling repos at HEAD, which for ntopng
+    # means an nDPI that its 2025 commit cannot compile against. Re-apply the
+    # pin here, exactly as the per-bug transplant path does after its own
+    # build_version -- otherwise every merge rebuild silently undoes it and
+    # the container fails to build.
+    _pin_image_siblings(project, project_image)
+
     # Layer the agent CLI on top of the freshly built project image
-    project_image = f"gcr.io/oss-fuzz/{project}"
     image_tag = build_agent_image(project, project_image)
     logger.info("Agent image built: %s", image_tag)
     return image_tag
@@ -967,14 +1009,22 @@ def start_merge_container(
             r"""sed -i 's|^const char \*json_util_get_last_err()$|const char *json_util_get_last_err(void)|' """
             r"""/src/json-c-json-c-0.16-20220414/json_util.c""",
         )
-        # nDPI shipped in the ntopng project image is newer than ntopng target
-        # commits from 2023; its struct ndpi_proto no longer has app_protocol /
-        # master_protocol as direct members. Pin nDPI to a commit contemporary
-        # with the June 2023 ntopng commits used by this project.
+        # nDPI must stay API-contemporary with the ntopng target commit: too
+        # new and struct ndpi_proto has lost app_protocol / master_protocol as
+        # direct members, too old and ndpi_get_proto_breed_name has the wrong
+        # signature. This used to hardcode 570c75d6 for the June 2023 targets;
+        # that silently overwrote the image-level pin once the target moved to
+        # 08a87f27 (2025-01-31) and broke the build with 17 errors. Take the
+        # commit from _PROJECT_SIBLING_PINS so the merge container and the
+        # per-bug transplant container agree on one nDPI.
+        from bug_transplant import _PROJECT_SIBLING_PINS
+        _ndpi_pin = _PROJECT_SIBLING_PINS.get("ntopng", {}).get(
+            "nDPI", "570c75d6019872610b0cbde981e25edcda5f6754")
+        logger.info("Pinning nDPI in merge container -> %s", _ndpi_pin[:12])
         _exec_capture(
             container_name,
             "cd $NDPI_HOME && git clean -fdx >/dev/null 2>&1; "
-            "git checkout -f 570c75d6019872610b0cbde981e25edcda5f6754",
+            f"git checkout -f {_ndpi_pin}",
         )
         # Wire __bug_dispatch.o into ntopng's hand-written fuzz Makefile.
         # ntopng is not autotools-style for the OBJECTS list, and codex's

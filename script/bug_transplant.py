@@ -156,6 +156,13 @@ def agent_mounts() -> list[str]:
     cfg = _host_home() / ".config" / "opencode" / "opencode.jsonc"
     if cfg.exists():
         mounts += ["-v", f"{cfg}:/tmp/.opencode-config.jsonc:ro"]
+    # The provider/model catalog. opencode refreshes it over the network on
+    # first use; a container that cannot reach the catalog resolves every
+    # `<provider>/<model>` to `provider.no-route` and fails instantly.
+    models = _host_home() / ".cache" / "opencode" / "models.json"
+    if models.exists():
+        mounts += ["-v", f"{models}:/tmp/.opencode-models.json:ro"]
+        logger.info("Mounting opencode model catalog %s", models)
     for env_var in opencode_provider_env():
         mounts += ["-e", env_var]
     return mounts
@@ -287,7 +294,11 @@ def setup_codex_creds(container: str) -> None:
             "cp /tmp/.opencode-auth.json /home/agent/.local/share/opencode/auth.json; "
             "[ -f /tmp/.opencode-config.jsonc ] && "
             "cp /tmp/.opencode-config.jsonc /home/agent/.config/opencode/opencode.jsonc; "
-            "chown -R agent:agent /home/agent/.local /home/agent/.config 2>/dev/null; "
+            "mkdir -p /home/agent/.cache/opencode; "
+            "[ -f /tmp/.opencode-models.json ] && "
+            "cp /tmp/.opencode-models.json /home/agent/.cache/opencode/models.json; "
+            "chown -R agent:agent /home/agent/.local /home/agent/.config "
+            "/home/agent/.cache 2>/dev/null; "
             "true",
             user="root",
         )
@@ -529,17 +540,20 @@ def _patch_build_sh_for_repeated_compile(
         if ret != 0:
             logger.warning("Failed to patch libredwg /src/build.sh")
 
-    if project == "ntopng":
-        # ntopng's OSS-Fuzz build.sh creates the json-c CMake build dir with
-        # bare `mkdir build`. Shared --keep-containers runs can keep that
-        # directory between compiles, so make the command idempotent.
-        ret = _exec(
-            container_name,
-            r"""sed -i -E 's|^([[:space:]]*)mkdir[[:space:]]+build[[:space:]]*$|\1mkdir -p build|' /src/build.sh""",
-            user="root",
-        )
-        if ret != 0:
-            logger.warning("Failed to patch ntopng /src/build.sh")
+    # Several OSS-Fuzz build.sh files create a side build dir with a bare
+    # `mkdir build` -- ntopng and ndpi both do it for the json-c they vendor.
+    # In a reused container that directory survives the previous compile, so
+    # `mkdir` fails, and under `set -e` it takes the whole build with it: the
+    # bug then reports as failed with a sound agent diff already on disk.
+    # `mkdir -p` is a no-op difference on a clean tree, so apply it for every
+    # project rather than naming them one at a time.
+    ret = _exec(
+        container_name,
+        r"""sed -i -E 's|^([[:space:]]*)mkdir[[:space:]]+build[[:space:]]*$|\1mkdir -p build|' /src/build.sh""",
+        user="root",
+    )
+    if ret != 0:
+        logger.warning("Failed to make `mkdir build` idempotent in /src/build.sh")
 
 
 def _build_container_env(language: str) -> list[str]:
@@ -721,6 +735,63 @@ def collect_fix_diff(args: argparse.Namespace) -> bool:
 # Phase 1: Build Docker image with Codex layered on top
 # ---------------------------------------------------------------------------
 
+# Sibling repos an OSS-Fuzz Dockerfile clones unpinned, whose HEAD must match
+# the project's target commit. ntopng 08a87f27 (2025) does not compile against
+# current nDPI HEAD -- undeclared NDPI_MAX_SUPPORTED_PROTOCOLS, changed
+# ndpi_get_upper_proto signature -- so every rebuilt image silently produces a
+# tree that cannot build the fuzz target. Pinning in the project Dockerfile is
+# not durable: prepare_repository() does `git clean -fdx` + `git checkout -f`
+# on the oss-fuzz checkout before each build. Pin the built image instead.
+_PROJECT_SIBLING_PINS: dict[str, dict[str, str]] = {
+    "ntopng": {"nDPI": "5424d144242c5b85176465acb7376237d80c6d91"},
+}
+
+
+def _pin_image_siblings(project: str, image_tag: str) -> None:
+    """Check out pinned sibling repos inside *image_tag*, in place.
+
+    Applied as a ``docker build`` layer rather than ``docker run`` +
+    ``docker commit``: commit writes the *container's* config into the image,
+    so the ``--entrypoint bash`` needed to run git would be baked in as the
+    image's ENTRYPOINT. The Codex layer on top then inherits it and its
+    ``CMD ["sleep","infinity"]`` runs as ``bash sleep infinity``, which exits
+    at once -- the shared container dies before the first agent session.
+    A RUN layer leaves Entrypoint and Cmd untouched.
+    """
+    pins = _PROJECT_SIBLING_PINS.get(project)
+    if not pins:
+        return
+    steps = "".join(
+        f'RUN git -C /src/{repo} fetch --quiet origin {sha} 2>/dev/null || true; \\\n'
+        f'    git -C /src/{repo} checkout --force --quiet {sha} && \\\n'
+        f'    echo "pinned {repo} -> {sha[:12]}"\n'
+        for repo, sha in pins.items()
+    )
+    dockerfile = f"FROM {image_tag}\n{steps}"
+    # Empty build context: the repo would otherwise be uploaded to the daemon.
+    # --progress=plain so BuildKit echoes the RUN output we log below.
+    with tempfile.TemporaryDirectory() as ctx:
+        ret = subprocess.run(
+            ["docker", "build", "--progress=plain", "-t", image_tag, "-f", "-", ctx],
+            input=dockerfile, capture_output=True,
+            encoding="utf-8", errors="replace",
+        )
+    if ret.returncode != 0:
+        logger.warning("[%s] sibling pin failed: %s", project,
+                       ((ret.stderr or "") + (ret.stdout or ""))[-500:])
+        return
+    seen: set[str] = set()
+    for line in ((ret.stdout or "") + (ret.stderr or "")).splitlines():
+        if "pinned " not in line:
+            continue
+        # BuildKit echoes both the RUN command and its output; strip the shell
+        # quoting from the echo so the same pin is not logged twice.
+        msg = line.split("pinned ", 1)[1].strip().strip('"')
+        if msg not in seen:
+            seen.add(msg)
+            logger.info("[%s] pinned %s", project, msg)
+
+
 def build_project_image(
     project: str,
     target_commit: str | None = None,
@@ -754,6 +825,7 @@ def build_project_image(
         if ret != 0:
             logger.error("fuzz_helper.py build_version failed for %s", project)
             sys.exit(1)
+        _pin_image_siblings(project, image_tag)
         return image_tag
 
     # Fallback: simple build_image if no target commit
@@ -1556,9 +1628,26 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
                 timeout=_VERIFY_BUILD_TIMEOUT,
             )
             if ret_build != 0:
-                logger.error("Official compile failed after agent run")
-                logger.error("Build tail: %s", build_out[-500:] if build_out else "")
-                return 1
+                # A non-zero `compile` does not always mean the fuzz target is
+                # missing. ndpi's build.sh ends with `make unit`, which builds
+                # the project's unit-test binary -- at historical commits that
+                # step fails ("json.h file not found") because OSS-Fuzz's
+                # current build.sh is newer than the pinned source, long after
+                # every /out/fuzz_* target has been linked. Treating that as
+                # fatal threw away sound transplants. Mirror the merge flow:
+                # the target binary's existence is the build's real outcome.
+                ret_bin, _ = _exec_capture(
+                    container_name, f"test -x /out/{fuzzer}",
+                )
+                if ret_bin != 0:
+                    logger.error("Official compile failed after agent run")
+                    logger.error("Build tail: %s", build_out[-500:] if build_out else "")
+                    return 1
+                logger.warning(
+                    "compile exited %d but /out/%s was built -- continuing. "
+                    "Build tail: %s",
+                    ret_build, fuzzer, build_out[-300:] if build_out else "",
+                )
 
             # Restore testcase: prefer agent's modified copy from /out,
             # fall back to /work (agent may have modified in-place),
