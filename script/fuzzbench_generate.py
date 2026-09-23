@@ -348,14 +348,35 @@ def generate_dockerfile(project: str, oss_fuzz_dir: Path, builder_digest: str,
             1,
         )
 
+    # Pin sibling repos the Dockerfile clones unpinned. Doing it here rather
+    # than in build.sh is what makes it reliable: it runs at image-build time,
+    # right where the clone happens, and cannot be skipped by a shell test.
+    content = pin_sibling_clones(project, content)
+
     # FuzzBench's coverage builder extends the benchmark image and expects
     # basic download/archive tools to be present.
     if " apt-get install -y " in content:
+
+        extra = _PROJECT_EXTRA_APT.get(project, ())
+
+        def _add_download_tools(m):
+            head, pkgs = m.group(1), m.group(2)
+            want = ["wget", "unzip"] + [e for e in extra if e not in pkgs]
+            if all(pkg in pkgs for pkg in want):
+                return head + pkgs
+            stripped = pkgs.rstrip()
+            if stripped.endswith("\\"):
+                # The apt line continues onto the next one. Appending after the
+                # backslash makes it escape a space instead of the newline, so
+                # the continuation lines become Dockerfile instructions:
+                # "unknown instruction: liblzma-dev". Insert before it.
+                return (head + stripped[:-1].rstrip() + " "
+                        + " ".join(want) + " \\")
+            return head + stripped + " " + " ".join(want)
+
         content = re.sub(
             r"(apt-get install -y\s+)([^\n]+)",
-            lambda m: (m.group(1) + m.group(2) if all(
-                pkg in m.group(2) for pkg in ("wget", "unzip")) else
-                       m.group(1) + m.group(2).rstrip() + " wget unzip"),
+            _add_download_tools,
             content,
             count=1,
         )
@@ -396,6 +417,42 @@ def generate_dockerfile(project: str, oss_fuzz_dir: Path, builder_digest: str,
         content += f"\n{patch_lines}\n"
 
     return content
+
+
+def copy_dockerfile_context(project: str, oss_fuzz_dir: Path, bench_dir: Path,
+                            dockerfile_content: str) -> int:
+    """Copy the files the project Dockerfile COPYs into the benchmark context.
+
+    An OSS-Fuzz project Dockerfile is written against its own directory, so it
+    may `COPY` harness sources, dictionaries or seed directories that live
+    next to it (ghostscript: `*.cc`, `dicts`, `pdf_seeds`). The benchmark dir
+    is a different build context, and a missing source is a hard `docker build`
+    failure, so mirror those paths in. Anything this generator adds itself
+    (patches/, corpus_seeds*.zip, build.sh) is already handled elsewhere.
+    """
+    project_dir = oss_fuzz_dir / "projects" / project
+    generated = ("patches/", "patches", "corpus_seeds*.zip", "build.sh")
+    copied = 0
+    for line in dockerfile_content.splitlines():
+        match = re.match(r"\s*COPY\s+(?!--)(.*)", line)
+        if not match:
+            continue
+        tokens = match.group(1).split()
+        if len(tokens) < 2:
+            continue
+        for src in tokens[:-1]:          # last token is the destination
+            if src in generated:
+                continue
+            for candidate in sorted(project_dir.glob(src)):
+                dst = bench_dir / candidate.name
+                if candidate.is_dir():
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(candidate, dst)
+                else:
+                    shutil.copy2(candidate, dst)
+                copied += 1
+    return copied
 
 
 def get_project_repo_name(project: str, dockerfile_content: str) -> str:
@@ -530,11 +587,15 @@ else
     git apply $HARNESS_EXCLUDES /src/patches/harness.diff
 fi
 
-if ! git apply --check /src/patches/combined.diff 2>/dev/null; then
+# $HARNESS_EXCLUDES applies here too: the harness file is restored whole
+# from harness_sources/, so combined.diff's hunks for it would collide
+# ("does not match index"). Since the snapshot is taken after the merge it
+# already carries every per-bug harness gate.
+if ! git apply --check $HARNESS_EXCLUDES /src/patches/combined.diff 2>/dev/null; then
     echo "Trying git apply --3way for combined.diff..."
-    git apply --3way /src/patches/combined.diff
+    git apply --3way $HARNESS_EXCLUDES /src/patches/combined.diff
 else
-    git apply /src/patches/combined.diff
+    git apply $HARNESS_EXCLUDES /src/patches/combined.diff
 fi
 
 # --- Fix library CMakeLists.txt for new source files from combined.diff ---
@@ -555,8 +616,34 @@ fi
         project, original_build, fuzz_target)
 
     build_sh += f"""
+# --- Sanitizers: ASan only ---
+# These benchmarks are built with SANITIZER=address and their oracle counts
+# ASan reports and aborts. Any UBSan instrumentation that leaks in through the
+# environment produces recoverable "runtime error:" noise in every crash log,
+# and under aflplusplus (ASAN_OPTIONS=abort_on_error=1) turns it into a
+# SIGABRT that kills seeds during calibration. Drop it from the inherited
+# flags; -fsanitize=address and libFuzzer's own flags are kept.
+for _var in CFLAGS CXXFLAGS; do
+    eval "_val=\\${{$_var:-}}"
+    _val=$(printf '%s' "$_val" | sed -E \
+        -e 's/-fsanitize=undefined[^ ]*//g' \
+        -e 's/-fsanitize=(array-bounds|bool|builtin|enum|float-divide-by-zero|function|integer|integer-divide-by-zero|null|object-size|return|returns-nonnull-attribute|shift|signed-integer-overflow|unreachable|vla-bound|vptr)[^ ]*//g' \
+        -e 's/-f(no-)?sanitize-(recover|trap)=[^ ]*//g' \
+        -e 's/  +/ /g')
+    eval "export $_var=\\"\\$_val\\""
+done
+
 # --- Original build commands ---
 {original_build_patched}
+
+# Projects routinely build with `make -k ... || true`, so a fuzz target that
+# failed to link leaves a zero exit code and an image with no target in it --
+# invisible until trials start dying. Fail the build here instead.
+if [ ! -x "$OUT/{fuzz_target}" ]; then
+    echo "FATAL: $OUT/{fuzz_target} was not built -- see the build errors above"
+    exit 1
+fi
+echo "OK: $OUT/{fuzz_target} built ($(stat -c%s "$OUT/{fuzz_target}") bytes)"
 
 # --- Seed corpus: expand original seeds and per-bug testcase candidates ---
 # FuzzBench uses $OUT/{{fuzz_target}}_seed_corpus.zip as initial corpus.
@@ -604,9 +691,398 @@ fi
     return build_sh
 
 
+# Extra ./configure flags a project needs under FuzzBench, on top of whatever
+# its OSS-Fuzz build.sh passes.
+#
+# htslib: OSS-Fuzz's build.sh runs a bare ./configure, which picks up libcurl
+# and links hts_open_fuzzer against libcurl-gnutls.so.4. The FuzzBench runner
+# and coverage images are built from base-runner and carry no such library, so
+# the target dies at load time with
+#   "error while loading shared libraries: libcurl-gnutls.so.4"
+# -- every trial exits immediately and no coverage snapshot is ever produced.
+#
+# ghostscript: ghostpdl's configure hard-fails when libX11/libXt/libXext are
+# only partly present ("X11 libraries ... not available"). The base-builder
+# has libX11 but not libXt, and nothing in the pdfwrite driver set needs an
+# X display, so build without it. Without this the aflplusplus and honggfuzz
+# images fail to build while libfuzzer's happens to succeed.
+# Sibling repos an OSS-Fuzz Dockerfile clones *unpinned* (`git clone <url>`),
+# whose HEAD must match the project's target commit. ntopng's Dockerfile does
+# `git clone https://github.com/ntop/nDPI.git nDPI`, so rebuilding the
+# benchmark later picks up whatever nDPI HEAD is that day and fails with
+# "no matching function for call to 'ndpi_get_upper_proto'" /
+# "no member named 'host_server_name' in 'ndpi_flow_struct'". Pin the commit
+# that actually compiles against the graft's target commit.
+# Extra distro packages a project needs in the benchmark image. Projects that
+# build a dependency from source into /usr/local/lib still fail configure's
+# link probe, because the linker does not search that path: nDPI's configure
+# reports "Missing libpcap(-dev) library", aborts before generating ./libtool,
+# and ntopng then dies on undeclared NDPI_MAX_SUPPORTED_PROTOCOLS -- one
+# missing package surfacing three layers away.
+_PROJECT_EXTRA_APT: dict[str, tuple[str, ...]] = {
+    "ntopng": ("libpcap-dev",),
+    # ndpi builds libpcap from source into /usr/local/lib, which the linker
+    # does not search, so configure reports "Missing libpcap(-dev) library".
+    "ndpi": ("libpcap-dev",),
+}
+
+# Flags to strip from the build environment before ./configure. ndpi's
+# fuzz/Makefile.am does `AM_CFLAGS += $(LIB_FUZZING_ENGINE)` and its configure
+# folds $CXXFLAGS into @NDPI_CFLAGS@, so C++-only flags reach C compiles and
+# clang hard-errors: "invalid argument '--std=c++14' not allowed with 'C'".
+_PROJECT_STRIP_ENV_FLAGS: dict[str, tuple[str, ...]] = {
+    "ndpi": ("--std=c++14",),
+}
+
+
+def strip_env_flag_commands(project: str) -> str:
+    """Shell lines removing C++-only flags from the build env, or ''."""
+    flags = _PROJECT_STRIP_ENV_FLAGS.get(project)
+    if not flags:
+        return ""
+    out = ["", "# Strip flags that break C compiles (see _PROJECT_STRIP_ENV_FLAGS)."]
+    for var in ("LIB_FUZZING_ENGINE", "CFLAGS", "CXXFLAGS"):
+        for flag in flags:
+            out.append(f'export {var}="${{{var}//{flag}/}}"')
+    return "\n".join(out) + "\n"
+
+
+# Sibling repos an OSS-Fuzz Dockerfile clones unpinned. These MUST match the
+# commit the transplant and merge containers used, or the benchmark builds
+# against a different nDPI than the one combined.diff was produced against:
+# the patch line numbers stop matching and crash-line collection yields 0/N.
+# bug_transplant._PROJECT_SIBLING_PINS is the single source of truth -- three
+# copies of this constant drifted to three different commits (8eaa81ba here,
+# 570c75d6 hardcoded in the merge, 5424d144 in the transplant) and each one
+# silently broke a different stage.
+try:
+    from bug_transplant import _PROJECT_SIBLING_PINS  # noqa: F401
+except Exception:  # pragma: no cover - generator must still run standalone
+    _PROJECT_SIBLING_PINS: dict[str, dict[str, str]] = {
+        "ntopng": {"nDPI": "5424d144242c5b85176465acb7376237d80c6d91"},
+    }
+
+
+def pin_sibling_clones(project: str, dockerfile: str) -> str:
+    """Append a `git checkout <sha>` to each unpinned sibling clone line.
+
+        RUN git clone https://github.com/ntop/nDPI.git nDPI
+    becomes
+        RUN git clone https://github.com/ntop/nDPI.git nDPI \\
+         && git -C nDPI checkout --force <sha>
+
+    ntopng's build needs an nDPI that matches its target commit; the upstream
+    Dockerfile pins nothing, so an image built today gets nDPI HEAD and fails
+    with "no member named 'host_server_name' in 'ndpi_flow_struct'". The clone
+    is a full one, so the commit is reachable without vendoring the tree.
+    """
+    pins = _PROJECT_SIBLING_PINS.get(project)
+    if not pins:
+        return dockerfile
+
+    out = []
+    for line in dockerfile.splitlines():
+        stripped = line.rstrip()
+        for repo, sha in pins.items():
+            # match the clone line for this repo, not already pinned
+            if (re.search(rf"git clone\s+\S*{re.escape(repo)}\.git(\s+\S+)?\s*$", stripped)
+                    and "checkout" not in stripped):
+                target = stripped.split()[-1]
+                if target.endswith(".git"):
+                    target = repo
+                stripped = (f"{stripped} \\\n && git -C {target} "
+                            f"checkout --force {sha}")
+                break
+        out.append(stripped)
+    return "\n".join(out) + ("\n" if dockerfile.endswith("\n") else "")
+
+
+def sibling_pin_commands(project: str) -> str:
+    """Shell lines that pin unpinned sibling checkouts, or ''."""
+    pins = _PROJECT_SIBLING_PINS.get(project)
+    if not pins:
+        return ""
+    out = ["", "# Pin sibling repos the Dockerfile cloned unpinned (see"
+                " _PROJECT_SIBLING_PINS)."]
+    for repo, sha in pins.items():
+        out.append(f'if [ -d "$SRC/{repo}/.git" ]; then')
+        out.append(f'    git -C "$SRC/{repo}" fetch --quiet origin {sha} 2>/dev/null || true')
+        out.append(f'    git -C "$SRC/{repo}" checkout --quiet --force {sha}')
+        out.append(f'    echo "pinned {repo} to {sha[:12]}"')
+        out.append('fi')
+    return "\n".join(out) + "\n"
+
+
+_PROJECT_CONFIGURE_FLAGS: dict[str, tuple[str, ...]] = {
+    "htslib": ("--disable-libcurl", "--disable-s3", "--disable-gcs"),
+    # --enable-fontconfig makes gs.a reference Fc* symbols. Linking
+    # -lfontconfig to satisfy them is WRONG: the FuzzBench runner image is
+    # built from base-runner and only copies /out, so the target then dies at
+    # startup with "libfontconfig.so.1: cannot open shared object file" and
+    # every trial exits within minutes -- the same failure htslib had with
+    # libcurl-gnutls.so.4. Drop the dependency instead; autoconf honours the
+    # last --enable/--disable given, so appending wins.
+    "ghostscript": ("--without-x", "--disable-fontconfig"),
+}
+
+# Shell to run before the project's own build commands.
+#
+# ghostscript: CUPS branch-2.2 calls strlcpy without declaring it and
+# ghostpdl's pdf/pdf_optcontent.c calls pdfi_loop_detector_mark the same way.
+# Clang 16+ (which the honggfuzz, libafl and aflplusplus images ship) makes an
+# implicit declaration an error, so those three fuzzers fail to build while
+# the pinned base-builder's older clang is fine.
+_PROJECT_BUILD_PRELUDE: dict[str, str] = {
+    "ghostscript": (
+        'export CFLAGS="${CFLAGS:-} -Wno-error=implicit-function-declaration"\n'
+        'export CXXFLAGS="${CXXFLAGS:-} -Wno-error=implicit-function-declaration"'
+    ),
+}
+
+# Shell to splice in just before a line matching the key's regex.
+#
+# ghostscript: autogen.sh writes a per-check UBSan list
+# (-fsanitize=array-bounds,bool,...) plus -fno-sanitize-recover into every
+# Makefile compile rule whenever it sees a sanitizer build. These benchmarks
+# are ASan-only: left in place the UB reports are noise in every crash log,
+# and under aflplusplus (which pins ASAN_OPTIONS=abort_on_error=1) each one
+# becomes a SIGABRT that kills seeds during calibration. The leading
+# -fsanitize=address is untouched.
+_PROJECT_PRE_MAKE_FIXUPS: dict[str, tuple[str, str]] = {
+    "ghostscript": (
+        r"^\s*make\s+.*\blibgs\b",
+        '# (generator) ASan-only: drop every UBSan flag autogen.sh injected.\n'
+        '# Matching one literal check list is too fragile -- autogen writes the\n'
+        '# checks out in whatever order it detected them -- so rewrite each\n'
+        '# -fsanitize= list and keep only address/fuzzer components.\n'
+        'python3 - <<\'STRIP_UBSAN\'\n'
+        'import os, re\n'
+        'KEEP = ("address", "fuzzer", "fuzzer-no-link")\n'
+        'def fix_list(match):\n'
+        '    kept = [c for c in match.group(1).split(",") if c in KEEP]\n'
+        '    return "-fsanitize=" + ",".join(kept) if kept else ""\n'
+        'changed = 0\n'
+        'for root, _, files in os.walk("."):\n'
+        '    for name in files:\n'
+        '        if name != "Makefile" and not name.endswith(".mak"):\n'
+        '            continue\n'
+        '        path = os.path.join(root, name)\n'
+        '        try:\n'
+        '            text = open(path, encoding="utf-8", errors="replace").read()\n'
+        '        except OSError:\n'
+        '            continue\n'
+        '        new = re.sub(r"-fsanitize=([\\w,-]+)", fix_list, text)\n'
+        '        new = re.sub(r"-f(no-)?sanitize-(recover|trap)=[^\\s]*", "", new)\n'
+        '        new = new.replace("-fsanitize-undefined-trap-on-error", "")\n'
+        '        if new != text:\n'
+        '            open(path, "w", encoding="utf-8").write(new)\n'
+        '            changed += 1\n'
+        'print("stripped UBSan flags from %d makefile(s)" % changed)\n'
+        'STRIP_UBSAN',
+    ),
+}
+
+
+def add_project_build_prelude(project: str, build: str) -> str:
+    """Prepend the project's required environment setup, if it has any."""
+    prelude = _PROJECT_BUILD_PRELUDE.get(project)
+    if not prelude:
+        return build
+    return prelude + "\n\n" + build
+
+
+def add_project_pre_make_fixups(project: str, build: str) -> str:
+    """Splice project fixups in before the build line they have to precede."""
+    entry = _PROJECT_PRE_MAKE_FIXUPS.get(project)
+    if not entry:
+        return build
+    pattern, fixup = entry
+    out = []
+    patched = False
+    for line in build.splitlines():
+        if not patched and re.match(pattern, line):
+            out.append(fixup)
+            patched = True
+        out.append(line)
+    if not patched:
+        print(f"WARNING: {project} needs pre-make fixups but no line matched "
+              f"{pattern!r}", file=sys.stderr)
+    return "\n".join(out)
+
+# Libraries to drop from a project's manual fuzz-target link line. Disabling a
+# feature at configure time is not enough when the link line names the library
+# explicitly: htslib's OSS-Fuzz build.sh passes -lcurl -lcrypto, which drags
+# libcurl-gnutls.so.4 back in no matter what ./configure was told, and the
+# target then cannot load in the runner image.
+_PROJECT_STRIP_LINK_LIBS: dict[str, tuple[str, ...]] = {
+    "htslib": ("-lcurl", "-lcrypto"),
+}
+
+# Libraries a project's manual fuzz-target link line must gain. The mirror of
+# _PROJECT_STRIP_LINK_LIBS: ghostscript configures with --enable-fontconfig
+# and --enable-freetype, so gs.a references Fc*/FT_* symbols, but the link
+# loop passes only $CUPS_LIBS. Most fuzzer toolchains pull fontconfig in
+# transitively and link anyway; aflplusplus's does not, and fails with ~20
+# "undefined reference to `FcInitLoadConfigAndFonts'"-style errors, taking
+# that fuzzer out of the campaign.
+_PROJECT_ADD_LINK_LIBS: dict[str, tuple[str, ...]] = {
+    # Only -lfontconfig: the undefined symbols are all Fc*, and freetype is
+    # built from the cloned source into gs.a, so -lfreetype would ask for a
+    # system library that no builder image has.
+}
+
+# Extra apt packages a project's builder image needs. A -l flag is useless if
+# no image ships the library: adding -lfontconfig without libfontconfig1-dev
+# turns "undefined reference to Fc*" in one fuzzer into "cannot find
+# -lfontconfig" in every image, including the coverage build -- and a failed
+# measurer aborts the whole experiment.
+_PROJECT_APT_PACKAGES: dict[str, tuple[str, ...]] = {}
+
+
+def add_project_apt_packages(project: str, dockerfile: str) -> str:
+    """Append required -dev packages to the image's apt-get install line."""
+    pkgs = _PROJECT_APT_PACKAGES.get(project)
+    if not pkgs:
+        return dockerfile
+    out = []
+    for line in dockerfile.splitlines():
+        if "apt-get install" in line:
+            missing = [p for p in pkgs if p not in dockerfile]
+            if missing:
+                line = line.rstrip() + " " + " ".join(missing)
+        out.append(line)
+    return "\n".join(out)
+
+
+def add_project_link_libs(project: str, build: str) -> str:
+    """Append libraries the project's link line needs but does not name."""
+    libs = _PROJECT_ADD_LINK_LIBS.get(project)
+    if not libs:
+        return build
+
+    out = []
+    patched = False
+    for line in build.splitlines():
+        if "$LIB_FUZZING_ENGINE" in line and "__bug_dispatch.o" in line:
+            missing = [lib for lib in libs if lib not in build]
+            if missing:
+                line = line.rstrip() + " " + " ".join(missing)
+                patched = True
+        out.append(line)
+    if not patched and libs:
+        print(f"WARNING: {project} needs link libs {libs} but no "
+              f"$LIB_FUZZING_ENGINE link line was found to patch",
+              file=sys.stderr)
+    return "\n".join(out)
+
+
+def strip_project_link_libs(project: str, build: str) -> str:
+    """Remove libraries the runner image cannot provide from link lines."""
+    libs = _PROJECT_STRIP_LINK_LIBS.get(project)
+    if not libs:
+        return build
+
+    out = []
+    for line in build.splitlines():
+        if "$OUT/" in line and ("$CXX" in line or "$CC" in line):
+            for lib in libs:
+                line = re.sub(rf"(?<=\s){re.escape(lib)}(?=\s|$)", "", line)
+            line = re.sub(r"[ \t]{2,}", " ", line).rstrip()
+        out.append(line)
+    return "\n".join(out)
+
+
+def add_project_configure_flags(project: str, build: str) -> str:
+    """Append the project's required ./configure flags, if not already there."""
+    flags = _PROJECT_CONFIGURE_FLAGS.get(project)
+    if not flags:
+        return build
+
+    lines = build.splitlines()
+    out = []
+    patched = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not patched and (stripped == "./configure"
+                            or stripped.startswith("./configure ")
+                            or "./autogen.sh" in stripped):
+            # The command may be wrapped over continuation lines (ghostscript's
+            # autogen.sh call is), so find its last line and extend that one --
+            # appending to the first would put the flag after a trailing "\\".
+            end = i
+            while lines[end].rstrip().endswith("\\") and end + 1 < len(lines):
+                end += 1
+            whole = "\n".join(lines[i:end + 1])
+            missing = [f for f in flags if f not in whole]
+            if missing:
+                lines[end] = lines[end].rstrip() + " " + " ".join(missing)
+            out.extend(lines[i:end + 1])
+            patched = True
+            i = end + 1
+            continue
+        out.append(line)
+        i += 1
+    if not patched:
+        print(f"WARNING: {project} needs configure flags {flags} but the build "
+              f"has no ./configure line to patch", file=sys.stderr)
+    return "\n".join(out)
+
+
+def neutralize_leading_repo_cd(project: str, build: str) -> str:
+    """Comment out a bare ``cd <project>`` in the spliced build commands.
+
+    OSS-Fuzz build.sh files run from /src and start with ``cd <project>``.
+    The generated build.sh has already done ``cd /src/<project>`` before
+    splicing them in, so the relative cd fails with
+    "cd: <project>: No such file or directory" and the build dies before
+    compiling anything.
+    """
+    out = []
+    for line in build.splitlines():
+        if line.strip() in (f"cd {project}", f"cd ./{project}", f"cd $SRC/{project}"):
+            out.append(f"# (generator) dropped relative '{line.strip()}' "
+                       f"-- already in /src/{project}")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def absolutize_srcdir_paths(project: str, build: str) -> str:
+    """Run commands that reference ``./<project>/...`` from $SRC.
+
+    OSS-Fuzz build.sh files execute with $SRC as the working directory, so
+    they say ``bash -x ./ndpi/tests/ossfuzz.sh``. The generated build.sh has
+    already cd'd into /src/<project>, which breaks such a command twice: the
+    script path does not resolve, and -- once it does -- the script's own
+    relative paths (ndpi's ``tar -xvzf libpcap-1.9.1.tar.gz``, sitting in
+    $SRC) do not either. Wrapping the line in a subshell that cds to $SRC
+    restores the original semantics without disturbing the rest of the build.
+    """
+    out = []
+    for line in build.splitlines():
+        stripped = line.strip()
+        if f"./{project}/" in stripped and not stripped.startswith("#"):
+            indent = line[: len(line) - len(line.lstrip())]
+            out.append(f'{indent}(cd "$SRC" && {stripped})')
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def patch_project_build_commands(project: str, original_build: str,
                                  fuzz_target: str) -> str:
     """Apply repo-specific fixes to benchmark build commands."""
+    original_build = (sibling_pin_commands(project)
+                      + strip_env_flag_commands(project) + original_build)
+    original_build = neutralize_leading_repo_cd(project, original_build)
+    original_build = absolutize_srcdir_paths(project, original_build)
+    original_build = add_project_configure_flags(project, original_build)
+    original_build = strip_project_link_libs(project, original_build)
+    original_build = add_project_link_libs(project, original_build)
+    original_build = add_project_pre_make_fixups(project, original_build)
+    original_build = add_project_build_prelude(project, original_build)
     if project == "opensc":
         return patch_opensc_build_commands(original_build, fuzz_target)
     if project == "ndpi":
@@ -808,14 +1284,45 @@ def parse_crash_line(crash_text: str) -> dict:
     """
     result = {"file": None, "line": None, "function": None}
 
+    # Only the crash stack counts. ASan prints "allocated by thread T0 here:"
+    # (and "freed by thread ...") followed by the ALLOCATION stack; those
+    # frames are wherever the buffer came from, not where the bug fired. All
+    # 18 ntopng bugs carry such a section, and when the crash frame lacked a
+    # resolved :line the scan ran straight into it and recorded libpcap's
+    # sf-pcap.c as the crash site.
+    _stack_end = re.search(r"^(?:allocated|freed) by thread", crash_text,
+                           re.MULTILINE)
+    if _stack_end:
+        crash_text = crash_text[:_stack_end.start()]
+
     # Walk stack frames: find the first one in project source (not runtime)
+    # `[^\n]+?` for the function, not `\S+`: a C++ frame's demangled
+    # signature contains spaces ("IEC104Stats::processPacket(Flow*, bool,
+    # ...)"), so `\S+` stopped at the first space, failed to reach the path,
+    # and the frame was skipped entirely. Every C++ frame was invisible and
+    # the first matching frame was whatever C function came next -- for
+    # ntopng that was libpcap's grow_buffer in ASan's *allocation* stack, so
+    # all 18 bugs recorded a crash line in sf-pcap.c instead of their real
+    # site. C-only projects (htslib, libredwg) never showed this.
     for m in re.finditer(
-            r"#\d+\s+\S+\s+in\s+(\S+)\s+(/\S+?):(\d+)", crash_text):
+            r"#\d+\s+\S+\s+in\s+([^\n]+?)\s+(/\S+?):(\d+)", crash_text):
         filepath = m.group(2)
         if not _is_runtime_frame(filepath):
             result["function"] = m.group(1)
             result["file"] = filepath
             result["line"] = int(m.group(3))
+            return result
+
+    # No project frame carried a :line (the symbolizer does not always
+    # resolve one, e.g. ntopng's NetworkInterface::dissectPacket). Report the
+    # file and function with line=None rather than falling through to an
+    # unrelated frame: a missing line is honest, a wrong file is not.
+    for m in re.finditer(r"#\d+\s+\S+\s+in\s+([^\n]+?)\s+(/\S+)$",
+                         crash_text, re.MULTILINE):
+        filepath = m.group(2).rstrip()
+        if not _is_runtime_frame(filepath):
+            result["function"] = m.group(1)
+            result["file"] = filepath
             return result
 
     # Fallback: SUMMARY line (may point to runtime, but better than nothing)
@@ -1150,9 +1657,15 @@ def main():
     builder_digest = get_builder_digest(oss_fuzz_dir, oss_fuzz_commit)
     dockerfile = generate_dockerfile(
         project, oss_fuzz_dir, builder_digest, dispatch_bytes)
+    dockerfile = add_project_apt_packages(project, dockerfile)
     logger.info("Generated Dockerfile from base-builder@%s (oss-fuzz %s)",
                 builder_digest[:19], oss_fuzz_commit[:12])
     (bench_dir / "Dockerfile").write_text(dockerfile)
+    copied_context = copy_dockerfile_context(
+        project, oss_fuzz_dir, bench_dir, dockerfile)
+    if copied_context:
+        logger.info("Copied %d OSS-Fuzz project file(s) into the build context",
+                    copied_context)
 
     # 7. Generate build.sh
     build_sh = generate_build_sh(project, target_commit, fuzz_target,
