@@ -39,6 +39,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -873,8 +877,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Data collection
     parser.add_argument("--testcases-dir",
-                        default=os.environ.get("TESTCASES", ""),
-                        help="Testcase directory (default: $TESTCASES)")
+                        default=os.environ.get("TESTCASES")
+                        or str(_REPO_ROOT / "dataset" / "testcases"),
+                        help="Testcase directory "
+                             "(default: $TESTCASES, else dataset/testcases)")
     parser.add_argument("--repo-path",
                         default=os.environ.get("REPO_PATH", ""),
                         help="Project git repo path for ancestry checks (default: $REPO_PATH)")
@@ -924,6 +930,23 @@ def main() -> int:
     )
     for name, value in filled.items():
         logger.info("%s not in environment; using %s from %s", name, value, SETENV_SCRIPT)
+
+    # A wrong (or empty) testcase directory does not fail -- it makes every
+    # bug "testcase not found" and the batch quietly transplants nothing.
+    # Fail here instead, while the cause is still on screen.
+    if not os.path.isdir(args.testcases_dir):
+        logger.error(
+            "Testcase directory does not exist: %r. Run "
+            "`source script/setenv.sh` (it sets $TESTCASES) or pass "
+            "--testcases-dir explicitly.",
+            args.testcases_dir,
+        )
+        return 1
+    n_testcases = len(os.listdir(args.testcases_dir))
+    if n_testcases == 0:
+        logger.error("Testcase directory %s is empty", args.testcases_dir)
+        return 1
+    logger.info("Testcases: %s (%d files)", args.testcases_dir, n_testcases)
 
     # ------------------------------------------------------------------
     # 1. Load data
