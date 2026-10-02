@@ -171,6 +171,11 @@ def agent_mounts() -> list[str]:
 # Provider keys opencode reads straight from the environment. Only those the
 # host actually sets are forwarded, and the value is never logged.
 OPENCODE_PROVIDER_ENV_VARS = (
+    # opencode-go (the paid `opencode-go/*` models) authenticates with this.
+    # The value normally lives in ~/.config/opencode/service.json; export it
+    # from there before launching, since only keys present in the host
+    # environment are forwarded.
+    "OPENCODE_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -556,7 +561,7 @@ def _patch_build_sh_for_repeated_compile(
         logger.warning("Failed to make `mkdir build` idempotent in /src/build.sh")
 
 
-def _build_container_env(language: str) -> list[str]:
+def _build_container_env(language: str, project: str = "") -> list[str]:
     """Match the default build env used by fuzz_helper.py build_version."""
     return [
         "FUZZING_ENGINE=libfuzzer",
@@ -568,7 +573,12 @@ def _build_container_env(language: str) -> list[str]:
         # CMAKE_BUILD_PARALLEL_LEVEL does nothing.  Without it every make
         # build ran serially (~540s cold for libredwg, ~72s per file).
         # --output-sync=line only has meaning for a parallel build.
-        "MAKEFLAGS=-j30 --output-sync=line",
+        # Ghostscript is the exception: its build.sh runs CUPS's
+        # `make -C filter libs install-libs`, which is not parallel-safe --
+        # under -j install-libs races the libcupsimage.so.2 link. Its main
+        # build passes -j$(nproc) itself (same note in fuzz_helper.py).
+        ("MAKEFLAGS=--output-sync=line" if project == "ghostscript"
+         else "MAKEFLAGS=-j30 --output-sync=line"),
         "CMAKE_BUILD_PARALLEL_LEVEL=30",
         "NINJA_STATUS=",
         "TERM=dumb",
@@ -1182,7 +1192,7 @@ def create_shared_container(
         "-v", f"{work_dir}:/work",
         "-v", f"{agents_dir}/AGENTS.md:/src/{project}/AGENTS.md",
     ]
-    for env_var in _build_container_env(language):
+    for env_var in _build_container_env(language, project):
         docker_run_cmd += ["-e", env_var]
 
     # Mount codex credentials
@@ -1325,7 +1335,7 @@ def run_agent_in_container(args: argparse.Namespace) -> int:
             # AGENTS.md as shared memory (rw)
             "-v", f"{agents_dir}/AGENTS.md:/src/{args.project}/AGENTS.md",
         ]
-        for env_var in _build_container_env(language):
+        for env_var in _build_container_env(language, args.project):
             docker_run_cmd += ["-e", env_var]
 
         # Mount codex credentials (login mode)

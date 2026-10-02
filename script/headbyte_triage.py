@@ -41,6 +41,31 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 CYCLE_RE = re.compile(r"crashes-(\d+)\.tar\.gz$")
 
+# Crash types UndefinedBehaviorSanitizer produces.  The benchmarks are ASan-only,
+# so these can never reproduce and are not this suite's bugs.
+UBSAN_CRASH_TYPES = frozenset({
+    "Integer-overflow", "Divide-by-zero", "Undefined-shift",
+    "Float-cast-overflow", "Pointer-overflow", "Object-size",
+    "Misaligned-address", "Invalid-bool-value", "Invalid-enum-value",
+    "Non-positive-vla-size", "Implicit-integer-sign-change",
+    "Implicit-unsigned-integer-truncation",
+    "Implicit-signed-integer-truncation",
+})
+
+
+def load_crash_types(db_path):
+    """crash artifact name -> the crash_type FuzzBench recorded for it."""
+    import sqlite3
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    out = {}
+    for name, ctype in con.execute(
+            "select crash_testcase, crash_type from crash"):
+        if name and name not in out:
+            out[name] = (ctype or "").splitlines()[0].strip()
+    con.close()
+    logger.info("Loaded %d confirmed crashes from %s", len(out), db_path)
+    return out
+
 
 def slot_of(head: int, slice_: int, slots: int) -> int:
     """Head byte -> dispatch slot, mirroring __bug_dispatch_slot() in C."""
@@ -58,6 +83,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--snapshot-period", type=int, default=900,
                    help="Seconds per measurement cycle (default: 900; the "
                         "libavc graft campaign used 1800)")
+    p.add_argument("--db", type=Path, default=None,
+                   help="FuzzBench local.db.  Without it every crash-* file the "
+                        "fuzzers wrote is counted.  Fuzzers write one for any "
+                        "finding, including leaks, and FuzzBench's own measurer "
+                        "records only the ones that reproduce as a sanitizer "
+                        "crash -- libredwg's fuzzers wrote 17,361 files where "
+                        "the measurer confirmed 7,039, and the surplus is what "
+                        "later shows up as 'cannot reproduce'.  With --db, only "
+                        "crashes the measurer confirmed are counted, and "
+                        "UBSan-typed ones are dropped as outside this "
+                        "benchmark's ASAN-only oracle.")
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -81,7 +117,10 @@ def main() -> int:
     # (fuzzer, trial, bug) -> earliest cycle ; and the unique inputs behind it
     first: dict[tuple, int] = {}
     inputs: dict[tuple, set] = collections.defaultdict(set)
-    slot0 = 0
+    crash_types = load_crash_types(args.db) if args.db else None
+    dropped = collections.Counter()
+    slot0 = 0            # occurrences, kept for continuity
+    slot0_digests: set = set()   # unique inputs, comparable with the replay
     archives = unreadable = 0
 
     for root, _dirs, files in os.walk(args.experiment_dir):
@@ -100,15 +139,34 @@ def main() -> int:
                     for member in tar.getmembers():
                         if not member.isfile():
                             continue
-                        if not os.path.basename(member.name).startswith("crash-"):
+                        base = os.path.basename(member.name)
+                        if not base.startswith("crash-"):
                             continue      # oom-/timeout- artifacts are not bugs
+                        if crash_types is not None:
+                            ctype = crash_types.get(base)
+                            if ctype is None:
+                                # The fuzzer wrote it; FuzzBench's measurer never
+                                # confirmed it as a sanitizer crash (leaks land
+                                # here).  Not a crash by the campaign's own
+                                # standard.
+                                dropped["unconfirmed"] += 1
+                                continue
+                            if ctype in UBSAN_CRASH_TYPES:
+                                dropped[f"ubsan:{ctype}"] += 1
+                                continue
                         fh = tar.extractfile(member)
                         data = fh.read() if fh else b""
                         if not data:
                             continue
                         slot = slot_of(data[0], slice_, slots)
                         if slot == 0:
+                            # Archives are cumulative, so one crash reappears in
+                            # every later archive.  Count occurrences *and*
+                            # unique contents: the latter is the number that is
+                            # comparable with dispatch_zero_replay.py, which
+                            # dedupes by digest.
                             slot0 += 1
+                            slot0_digests.add(hashlib.sha256(data).hexdigest())
                             continue
                         bug = "/".join(slot2bug[slot])
                         key = (fuzzer, trial, bug)
@@ -119,8 +177,13 @@ def main() -> int:
             except (tarfile.TarError, OSError):
                 unreadable += 1
 
-    logger.info("Scanned %d crash archives (%d unreadable); %d slot-0 "
-                "(ungated) crash inputs skipped", archives, unreadable, slot0)
+    logger.info("Scanned %d crash archives (%d unreadable); slot-0 (ungated) "
+                "crashes skipped: %d unique inputs, %d occurrences across the "
+                "cumulative archives", archives, unreadable,
+                len(slot0_digests), slot0)
+    if dropped:
+        logger.info("Dropped by --db: %s",
+                    dict(sorted(dropped.items(), key=lambda kv: -kv[1])))
 
     rows = []
     for (fuzzer, trial, bug), cycle in sorted(first.items()):

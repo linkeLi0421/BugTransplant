@@ -907,8 +907,13 @@ def start_merge_container(
         "-e", f"FUZZING_LANGUAGE={language}",
         "-e", "HELPER=True",
         # Keep in step with bug_transplant._build_container_env: without -j
-        # every autotools build here runs serially.
-        "-e", "MAKEFLAGS=-j30 --output-sync=line",
+        # every autotools build here runs serially. Ghostscript is the
+        # exception: its build.sh runs `make -C filter libs install-libs` in
+        # CUPS, which is not parallel-safe -- under -j install-libs races the
+        # libcupsimage.so.2 link and fails. Its main build already passes
+        # -j$(nproc) itself (see the same note in fuzz_helper.py).
+        "-e", ("MAKEFLAGS=--output-sync=line" if project == "ghostscript"
+               else "MAKEFLAGS=-j30 --output-sync=line"),
         "-e", "CMAKE_BUILD_PARALLEL_LEVEL=30",
         "-e", "NINJA_STATUS=",
         "-e", "TERM=dumb",
