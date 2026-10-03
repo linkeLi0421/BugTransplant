@@ -1175,12 +1175,16 @@ def load_and_categorize_bugs(
         else:
             testcase_only_bugs.append(entry)
 
-    # Also scan disk for bug dirs not in summary
+    # Also scan disk for bug dirs not in summary. A bug the summary lists as
+    # failed is not "missing": its dir still holds whatever the agent left
+    # (debug prints, a non-crashing graft), so admitting it would add a bug
+    # that never triggers.
+    in_summary = {r.get("bug_id") for r in summary.get("results", [])}
     for d in bug_transplant_dir.iterdir():
         if not d.is_dir() or not d.name.startswith(f"{project}_"):
             continue
         bid = d.name[len(f"{project}_"):]
-        if bid in seen:
+        if bid in seen or bid in in_summary:
             continue
         if (d / "bug_transplant.impossible").exists():
             continue
